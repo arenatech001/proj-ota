@@ -16,6 +16,83 @@ if (!fs.existsSync(APPS_DIR)) {
   fs.mkdirSync(APPS_DIR, { recursive: true });
 }
 
+// Agent 状态存储
+// 结构: { appName: { agentId: { ip, lastSeen, requestCount, currentVersion, lastAction, userAgent } } }
+const agentStatus = new Map();
+
+// 获取客户端 IP 地址
+function getClientIP(req) {
+  // 支持代理场景
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) {
+    return forwarded.split(',')[0].trim();
+  }
+  const realIP = req.headers['x-real-ip'];
+  if (realIP) {
+    return realIP;
+  }
+  return req.connection?.remoteAddress || req.socket?.remoteAddress || 'unknown';
+}
+
+// 记录 agent 状态
+function recordAgentStatus(appName, req, action, version = null) {
+  const ip = getClientIP(req);
+  const userAgent = req.headers['user-agent'] || 'unknown';
+  // 优先使用 agent 主动提供的 ID，否则使用 IP 作为 fallback
+  const agentId = req.headers['x-agent-id'] || ip;
+  const now = new Date().toISOString();
+  
+  if (!agentStatus.has(appName)) {
+    agentStatus.set(appName, new Map());
+  }
+  
+  const appAgents = agentStatus.get(appName);
+  if (!appAgents.has(agentId)) {
+    appAgents.set(agentId, {
+      id: agentId,
+      ip: ip,
+      lastSeen: now,
+      requestCount: 0,
+      currentVersion: null,
+      lastAction: action,
+      userAgent: userAgent
+    });
+  }
+  
+  const agent = appAgents.get(agentId);
+  agent.lastSeen = now;
+  agent.requestCount++;
+  agent.lastAction = action;
+  if (version) {
+    agent.currentVersion = version;
+  }
+  // 如果 agent 提供了 ID，更新 IP（可能 IP 会变化）
+  if (req.headers['x-agent-id']) {
+    agent.ip = ip;
+  }
+}
+
+// 清理长时间未活跃的 agent（超过 1 小时）
+function cleanupInactiveAgents() {
+  const oneHourAgo = Date.now() - 60 * 60 * 1000;
+  
+  for (const [appName, appAgents] of agentStatus.entries()) {
+    for (const [agentId, agent] of appAgents.entries()) {
+      const lastSeenTime = new Date(agent.lastSeen).getTime();
+      if (lastSeenTime < oneHourAgo) {
+        appAgents.delete(agentId);
+      }
+    }
+    // 如果应用没有活跃的 agent，删除应用记录
+    if (appAgents.size === 0) {
+      agentStatus.delete(appName);
+    }
+  }
+}
+
+// 定期清理（每 10 分钟）
+setInterval(cleanupInactiveAgents, 10 * 60 * 1000);
+
 // 日志函数
 function log(level, message, ...args) {
   const timestamp = new Date().toISOString();
@@ -217,7 +294,18 @@ function createServer() {
           res.end(`Config file not found for app: ${appName}`);
           return;
         }
-        const content = fs.readFileSync(configFile);
+        const content = fs.readFileSync(configFile, 'utf8');
+        
+        // 尝试从配置文件中提取版本号
+        let version = null;
+        const versionMatch = content.match(/^version:\s*["']?([^"'\n]+)["']?/m);
+        if (versionMatch) {
+          version = versionMatch[1];
+        }
+        
+        // 记录 agent 状态
+        recordAgentStatus(appName, req, 'config_check', version);
+        
         res.writeHead(200, { 
           'Content-Type': 'application/x-yaml',
           'Cache-Control': 'no-cache'
@@ -241,7 +329,7 @@ function createServer() {
           res.end('Config file not found. Use /ota/<app_name>/version.yaml format.');
           return;
         }
-        const content = fs.readFileSync(configFile);
+        const content = fs.readFileSync(configFile, 'utf8');
         res.writeHead(200, { 
           'Content-Type': 'application/x-yaml',
           'Cache-Control': 'no-cache'
@@ -269,6 +357,9 @@ function createServer() {
           res.end(`Binary file not found: ${appName}/${fileName}`);
           return;
         }
+        
+        // 记录 agent 状态（文件下载）
+        recordAgentStatus(appName, req, 'file_download');
         
         const stat = fs.statSync(binaryPath);
         const fileSize = stat.size;
@@ -299,6 +390,29 @@ function createServer() {
     }
     
     
+    // Agent 状态端点: /ota/<app_name>/agents
+    const agentsMatch = url.pathname.match(/^\/ota\/([^\/]+)\/agents$/);
+    if (agentsMatch) {
+      const appName = agentsMatch[1];
+      try {
+        const appAgents = agentStatus.get(appName);
+        const agents = appAgents ? Array.from(appAgents.values()) : [];
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          app: appName,
+          agents: agents,
+          total: agents.length,
+          timestamp: new Date().toISOString()
+        }, null, 2));
+      } catch (err) {
+        error('Error serving agents for app %s: %s', appName, err.message);
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Internal Server Error');
+      }
+      return;
+    }
+    
     // 应用信息端点: /ota/<app_name>/info
     const appInfoMatch = url.pathname.match(/^\/ota\/([^\/]+)\/info$/);
     if (appInfoMatch) {
@@ -313,6 +427,10 @@ function createServer() {
           mtime: fs.statSync(binaryPath).mtime
         } : null;
         
+        // 获取 agent 统计信息
+        const appAgents = agentStatus.get(appName);
+        const agentCount = appAgents ? appAgents.size : 0;
+        
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           app: appName,
@@ -320,10 +438,15 @@ function createServer() {
           version: '1.0.0',
           config: config,
           binary: binaryInfo,
+          agents: {
+            count: agentCount,
+            endpoint: `/ota/${appName}/agents`
+          },
           endpoints: {
             config: `/ota/${appName}/version.yaml`,
             files: `/ota/${appName}/files/<filename>`,
-            info: `/ota/${appName}/info`
+            info: `/ota/${appName}/info`,
+            agents: `/ota/${appName}/agents`
           }
         }, null, 2));
       } catch (err) {
@@ -403,6 +526,7 @@ function start() {
     info('  GET /ota/<app_name>/version.yaml  - Application configuration');
     info('  GET /ota/<app_name>/files/<file>  - Application file download');
     info('  GET /ota/<app_name>/info           - Application information');
+    info('  GET /ota/<app_name>/agents         - Agent status for application');
     info('  GET /health                        - Health check');
     info('  GET /info                          - Server information (list all apps)');
     info('');

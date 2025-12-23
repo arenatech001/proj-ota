@@ -60,6 +60,7 @@ export RESTART_CMD="systemctl restart myservice"  # 全局重启命令（可选�
 | `GET /ota/<app_name>/version.yaml` | 获取应用配置文件 |
 | `GET /ota/<app_name>/files/<filename>` | 下载应用文件 |
 | `GET /ota/<app_name>/info` | 获取应用信息 |
+| `GET /ota/<app_name>/agents` | 查看应用的所有 agent 状态 |
 | `GET /info` | 列出所有应用 |
 | `GET /health` | 健康检查 |
 
@@ -185,9 +186,12 @@ OTA agent 客户端使用应用专属的配置 URL：
 ./ota-agent \
   -config-url="http://server.com/ota/myapp/version.yaml" \
   -version-file="/var/lib/ota-agent/myapp/version" \
+  -agent-id="server-001" \
   -check-interval=5m \
   -daemon=true
 ```
+
+**Agent ID**: 建议为每个 agent 实例设置唯一的标识符（如服务器主机名、设备 ID 等），这样可以在服务器端准确跟踪每个 agent 的状态。如果不提供，服务器将使用 IP 地址作为标识符。
 
 详细说明请参考 [../ota-agent/README.md](../ota-agent/README.md)
 
@@ -332,6 +336,7 @@ python3 update-version.py app2 2.0.0 \
 ./ota-agent \
   -config-url="http://server.com/ota/app1/version.yaml" \
   -version-file="/var/lib/ota-agent/app1/version" \
+  -agent-id="server-001" \
   -check-interval=5m \
   -daemon=true
 
@@ -339,6 +344,7 @@ python3 update-version.py app2 2.0.0 \
 ./ota-agent \
   -config-url="http://server.com/ota/app2/version.yaml" \
   -version-file="/var/lib/ota-agent/app2/version" \
+  -agent-id="server-002" \
   -check-interval=5m \
   -daemon=true
 ```
@@ -351,6 +357,9 @@ curl http://localhost:3000/info
 
 # 查看特定应用信息
 curl http://localhost:3000/ota/app1/info
+
+# 查看应用的所有 agent 状态
+curl http://localhost:3000/ota/app1/agents
 ```
 
 ### 多应用配置文件示例
@@ -407,6 +416,7 @@ User=root
 ExecStart=/usr/local/bin/ota-agent \
   -config-url="http://server.com/ota/app1/version.yaml" \
   -version-file="/var/lib/ota-agent/app1/version" \
+  -agent-id="server-001" \
   -check-interval=5m \
   -daemon=true
 Restart=always

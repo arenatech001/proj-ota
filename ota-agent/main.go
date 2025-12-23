@@ -86,14 +86,21 @@ func retryHTTPRequest(maxRetries int, delay time.Duration, fn func() (*http.Resp
 	return nil, fmt.Errorf("after %d retries: %w", maxRetries, lastErr)
 }
 
-func fetchConfig(url string, timeout time.Duration, maxRetries int, logger *Logger) (*Config, error) {
+func fetchConfig(url string, agentID string, timeout time.Duration, maxRetries int, logger *Logger) (*Config, error) {
 	client := &http.Client{Timeout: timeout}
 	var resp *http.Response
 	var err error
 
 	if maxRetries > 1 {
 		resp, err = retryHTTPRequest(maxRetries, 2*time.Second, func() (*http.Response, error) {
-			r, e := client.Get(url)
+			req, e := http.NewRequest("GET", url, nil)
+			if e != nil {
+				return nil, e
+			}
+			if agentID != "" {
+				req.Header.Set("X-Agent-ID", agentID)
+			}
+			r, e := client.Do(req)
 			if e != nil {
 				return nil, e
 			}
@@ -103,7 +110,14 @@ func fetchConfig(url string, timeout time.Duration, maxRetries int, logger *Logg
 			return r, nil
 		})
 	} else {
-		resp, err = client.Get(url)
+		req, e := http.NewRequest("GET", url, nil)
+		if e != nil {
+			return nil, fmt.Errorf("create request: %w", e)
+		}
+		if agentID != "" {
+			req.Header.Set("X-Agent-ID", agentID)
+		}
+		resp, err = client.Do(req)
 	}
 
 	if err != nil {
@@ -165,14 +179,21 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func downloadFile(url, dest string, timeout time.Duration, maxRetries int, logger *Logger) error {
+func downloadFile(url, dest string, agentID string, timeout time.Duration, maxRetries int, logger *Logger) error {
 	client := &http.Client{Timeout: timeout}
 	var resp *http.Response
 	var err error
 
 	if maxRetries > 1 {
 		resp, err = retryHTTPRequest(maxRetries, 2*time.Second, func() (*http.Response, error) {
-			r, e := client.Get(url)
+			req, e := http.NewRequest("GET", url, nil)
+			if e != nil {
+				return nil, e
+			}
+			if agentID != "" {
+				req.Header.Set("X-Agent-ID", agentID)
+			}
+			r, e := client.Do(req)
 			if e != nil {
 				return nil, e
 			}
@@ -182,7 +203,14 @@ func downloadFile(url, dest string, timeout time.Duration, maxRetries int, logge
 			return r, nil
 		})
 	} else {
-		resp, err = client.Get(url)
+		req, e := http.NewRequest("GET", url, nil)
+		if e != nil {
+			return fmt.Errorf("create request: %w", e)
+		}
+		if agentID != "" {
+			req.Header.Set("X-Agent-ID", agentID)
+		}
+		resp, err = client.Do(req)
 	}
 
 	if err != nil {
@@ -362,26 +390,7 @@ func validateConfig(cfg *Config) error {
 }
 
 // updateFile updates a single file
-func updateFile(file FileUpdate, fileVersion string, versionFile string, restartCmd string, timeout time.Duration, maxRetries int, logger *Logger) (bool, error) {
-	// Check local version for this file
-	fileVersionFile := versionFile + "." + file.Name
-	localVer, err := readLocalVersion(fileVersionFile)
-	if err != nil {
-		logger.Warn("read local version for %s error: %v, treating as no version", file.Name, err)
-		localVer = ""
-	}
-
-	// Use file version or fallback to config version
-	if fileVersion == "" {
-		fileVersion = "" // will be set from config version
-	}
-
-	// Check if update needed
-	if fileVersion != "" && localVer == fileVersion {
-		logger.Info("file %s already at version %s, skipping", file.Name, fileVersion)
-		return false, nil
-	}
-
+func updateFile(file FileUpdate, fileVersion string, versionFile string, restartCmd string, agentID string, timeout time.Duration, maxRetries int, logger *Logger) (bool, error) {
 	logger.Info("updating file %s (target: %s)", file.Name, file.Target)
 
 	// Check write permission
@@ -393,7 +402,7 @@ func updateFile(file FileUpdate, fileVersion string, versionFile string, restart
 	tmpDir := filepath.Dir(file.Target)
 	tmpFile := filepath.Join(tmpDir, fmt.Sprintf(".tmp-%s-%d", file.Name, time.Now().Unix()))
 	logger.Info("downloading %s to %s", file.Name, tmpFile)
-	if err := downloadFile(file.URL, tmpFile, timeout, maxRetries, logger); err != nil {
+	if err := downloadFile(file.URL, tmpFile, agentID, timeout, maxRetries, logger); err != nil {
 		_ = os.Remove(tmpFile)
 		return false, fmt.Errorf("download error: %w", err)
 	}
@@ -424,13 +433,6 @@ func updateFile(file FileUpdate, fileVersion string, versionFile string, restart
 		logger.Info("replaced %s (no previous version)", file.Target)
 	}
 
-	// Update version file for this file
-	if fileVersion != "" {
-		if err := writeLocalVersion(fileVersionFile, fileVersion); err != nil {
-			logger.Warn("write version file for %s error: %v (non-fatal)", file.Name, err)
-		}
-	}
-
 	// Restart if needed
 	if restartCmd != "" {
 		logger.Info("restarting after %s update...", file.Name)
@@ -454,10 +456,10 @@ func updateFile(file FileUpdate, fileVersion string, versionFile string, restart
 }
 
 // checkUpdate checks for updates and applies them
-func checkUpdate(cfgURL string, versionFile string, timeout time.Duration, maxRetries int, logger *Logger) error {
+func checkUpdate(cfgURL string, versionFile string, agentID string, timeout time.Duration, maxRetries int, logger *Logger) error {
 	logger.Info("checking for updates from %s", cfgURL)
 
-	remoteCfg, err := fetchConfig(cfgURL, timeout, maxRetries, logger)
+	remoteCfg, err := fetchConfig(cfgURL, agentID, timeout, maxRetries, logger)
 	if err != nil {
 		return fmt.Errorf("fetch config: %w", err)
 	}
@@ -494,7 +496,7 @@ func checkUpdate(cfgURL string, versionFile string, timeout time.Duration, maxRe
 			fileVersion = remoteCfg.Version
 		}
 
-		success, err := updateFile(file, fileVersion, versionFile, remoteCfg.RestartCmd, timeout, maxRetries, logger)
+		success, err := updateFile(file, fileVersion, versionFile, remoteCfg.RestartCmd, agentID, timeout, maxRetries, logger)
 		if err != nil {
 			logger.Error("failed to update %s: %v", file.Name, err)
 			lastErr = err
@@ -535,6 +537,7 @@ func main() {
 	// flags / env
 	cfgURL := flag.String("config-url", "", "URL to version.yaml (required)")
 	versionFile := flag.String("version-file", "version", "local version file path")
+	agentID := flag.String("agent-id", "", "Agent identifier (sent as X-Agent-ID header)")
 	timeout := flag.Duration("timeout", 30*time.Second, "http timeout")
 	maxRetries := flag.Int("max-retries", 3, "maximum number of retries for HTTP requests")
 	checkInterval := flag.Duration("check-interval", 5*time.Minute, "check interval for daemon mode")
@@ -557,7 +560,7 @@ func main() {
 	// Run once or as daemon
 	if !*daemon {
 		// Run once
-		if err := checkUpdate(*cfgURL, *versionFile, *timeout, *maxRetries, logger); err != nil {
+		if err := checkUpdate(*cfgURL, *versionFile, *agentID, *timeout, *maxRetries, logger); err != nil {
 			logger.Error("update check failed: %v", err)
 			os.Exit(1)
 		}
@@ -567,6 +570,7 @@ func main() {
 	// Daemon mode
 	logger.Info("starting OTA agent daemon")
 	logger.Info("config URL: %s", *cfgURL)
+	logger.Info("agent ID: %s", *agentID)
 	logger.Info("check interval: %v", *checkInterval)
 	logger.Info("version file: %s", *versionFile)
 
@@ -575,7 +579,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	// Run initial check
-	if err := checkUpdate(*cfgURL, *versionFile, *timeout, *maxRetries, logger); err != nil {
+	if err := checkUpdate(*cfgURL, *versionFile, *agentID, *timeout, *maxRetries, logger); err != nil {
 		logger.Error("initial update check failed: %v", err)
 	}
 
@@ -586,7 +590,7 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			if err := checkUpdate(*cfgURL, *versionFile, *timeout, *maxRetries, logger); err != nil {
+			if err := checkUpdate(*cfgURL, *versionFile, *agentID, *timeout, *maxRetries, logger); err != nil {
 				logger.Error("update check failed: %v", err)
 			}
 		case sig := <-sigChan:

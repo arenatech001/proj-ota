@@ -27,6 +27,7 @@ go build -o ota-agent main.go
 ./ota-agent \
   -config-url="http://server.com/ota/app1/version.yaml" \
   -version-file="/var/lib/ota-agent/version" \
+  -agent-id="server-001" \
   -check-interval=5m \
   -daemon=true
 ```
@@ -37,13 +38,15 @@ go build -o ota-agent main.go
 ./ota-agent \
   -config-url="http://server.com/ota/app1/version.yaml" \
   -version-file="/var/lib/ota-agent/version" \
+  -agent-id="server-001" \
   -daemon=false
 ```
 
 ## 命令行参数
 
 - `-config-url`: 配置文件 URL（必需）
-- `-version-file`: 本地版本文件路径（默认: `/var/lib/ota-agent/version`）
+- `-version-file`: 本地版本文件路径（默认: `version`）
+- `-agent-id`: Agent 标识符（可选，通过 X-Agent-ID header 发送给服务器）
 - `-timeout`: HTTP 请求超时时间（默认: 30s）
 - `-max-retries`: HTTP 请求最大重试次数（默认: 3）
 - `-check-interval`: 守护进程模式下的检查间隔（默认: 5m）
@@ -100,6 +103,7 @@ User=root
 ExecStart=/usr/local/bin/ota-agent \
   -config-url="http://server.com/ota/app1/version.yaml" \
   -version-file="/var/lib/ota-agent/app1/version" \
+  -agent-id="server-001" \
   -check-interval=5m \
   -daemon=true
 Restart=always
