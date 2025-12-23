@@ -574,6 +574,9 @@ func main() {
 	logger.Info("check interval: %v", *checkInterval)
 	logger.Info("version file: %s", *versionFile)
 
+	// 设置环境变量agentID=server-001
+	os.Setenv("AGENT_ID", *agentID)
+
 	// Handle signals for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
