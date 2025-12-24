@@ -175,9 +175,9 @@ func getExecutableRelativePath(relativePath string) (string, error) {
 	}
 
 	// 检查是否包含 .. 路径遍历
-	if strings.Contains(cleanPath, "..") {
-		return "", fmt.Errorf("relative path cannot contain '..': %s", relativePath)
-	}
+	// if strings.Contains(cleanPath, "..") {
+	// 	return "", fmt.Errorf("relative path cannot contain '..': %s", relativePath)
+	// }
 
 	return filepath.Join(exeDir, cleanPath), nil
 }
@@ -537,7 +537,7 @@ func checkUpdate(cfgURL string, versionFile string, agentID string, timeout time
 		return UpdateResult{Error: fmt.Errorf("invalid remote config: %w", err)}
 	}
 
-	logger.Info("remote version=%s, local version=%s", remoteCfg.Version, localVer)
+	logger.Info("remote version=%s, local version=%s, restart cmd=%s", remoteCfg.Version, localVer, remoteCfg.RestartCmd)
 
 	// Check if update needed
 	if remoteCfg.Version == localVer {
@@ -631,8 +631,9 @@ func main() {
 		runCmd = result.RestartCmd
 	}
 
+	runCmd = runCmd + " -id=" + *agentID
 	logger.Info("runCmd: %s", runCmd)
-	if err := runCommand(runCmd); err != nil {
+	if _, err := ensureManagedProcess(runCmd, "initial process start", logger); err != nil {
 		logger.Error("Start OTA agent runCommand failed: %v", err)
 	}
 
@@ -648,13 +649,13 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	// Process management function
-	handleProcessManagement := func(result UpdateResult) {
-		if result.Error == nil && result.Updated && result.RestartCmd != "" {
-			if _, err := ensureManagedProcess(result.RestartCmd, "after update (from remote config)", logger); err != nil {
-				logger.Error("failed to ensure managed process: %v", err)
-			}
-		}
-	}
+	// handleProcessManagement := func(result UpdateResult) {
+	// 	if result.Error == nil && result.Updated && result.RestartCmd != "" {
+	// 		if _, err := ensureManagedProcess(result.RestartCmd, "after update (from remote config)", logger); err != nil {
+	// 			logger.Error("failed to ensure managed process: %v", err)
+	// 		}
+	// 	}
+	// }
 
 	// Periodic check
 	ticker := time.NewTicker(*checkInterval)
@@ -667,7 +668,9 @@ func main() {
 			if result.Error != nil {
 				logger.Error("update check failed: %v", result.Error)
 			} else {
-				handleProcessManagement(result)
+				// 启动后如果更新不重启进程， 下一次启动生效
+				logger.Info("update success, last start cmd will be effective next time")
+				// handleProcessManagement(result)
 			}
 
 		case sig := <-sigChan:

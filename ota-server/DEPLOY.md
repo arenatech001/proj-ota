@@ -166,7 +166,7 @@ server {
     listen 80;
     server_name your-domain.com;
 
-    location / {
+    location /ota {
         proxy_pass http://localhost:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
