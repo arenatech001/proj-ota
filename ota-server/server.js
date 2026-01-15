@@ -10,10 +10,17 @@ const HOST = process.env.HOST || '0.0.0.0';
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 const APPS_DIR = process.env.APPS_DIR || path.join(__dirname, 'apps');
 const RESTART_CMD = process.env.RESTART_CMD || '';
+const LOG_DIR = process.env.LOG_DIR || path.join(__dirname, 'logs');
+const LOG_FILE = process.env.LOG_FILE || path.join(LOG_DIR, 'server.log');
 
 // 确保应用目录存在
 if (!fs.existsSync(APPS_DIR)) {
   fs.mkdirSync(APPS_DIR, { recursive: true });
+}
+
+// 确保日志目录存在
+if (!fs.existsSync(LOG_DIR)) {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
 }
 
 // Agent 状态存储
@@ -102,8 +109,38 @@ setInterval(cleanupInactiveAgents, 10 * 60 * 1000);
 // 日志函数
 function log(level, message, ...args) {
   const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] [${level}] ${message}`;
-  console.log(logMessage, ...args);
+  // 格式化消息，处理参数替换
+  let formattedMessage = message;
+  if (args.length > 0) {
+    // 简单的参数替换（支持 %s, %d, %j 等）
+    let argIndex = 0;
+    formattedMessage = message.replace(/%[sdj%]/g, (match) => {
+      if (match === '%%') return '%';
+      if (argIndex >= args.length) return match;
+      const arg = args[argIndex++];
+      if (match === '%j') return JSON.stringify(arg);
+      if (match === '%d') return Number(arg);
+      return String(arg);
+    });
+    // 如果还有剩余参数，追加到末尾
+    if (argIndex < args.length) {
+      formattedMessage += ' ' + args.slice(argIndex).map(a => 
+        typeof a === 'object' ? JSON.stringify(a) : String(a)
+      ).join(' ');
+    }
+  }
+  const logMessage = `[${timestamp}] [${level}] ${formattedMessage}\n`;
+  
+  // 输出到控制台
+  console.log(`[${timestamp}] [${level}]`, message, ...args);
+  
+  // 写入文件（异步，不阻塞）
+  fs.appendFile(LOG_FILE, logMessage, (err) => {
+    if (err) {
+      // 如果写入失败，只输出到控制台，避免无限循环
+      console.error('Failed to write log to file:', err.message);
+    }
+  });
 }
 
 function info(message, ...args) {
@@ -273,7 +310,7 @@ function createServer() {
     
     // CORS 支持
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     
     if (req.method === 'OPTIONS') {
@@ -286,6 +323,63 @@ function createServer() {
     if (url.pathname === '/health' || url.pathname === '/ping') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }));
+      return;
+    }
+    
+    // 游戏记录端点: /game/record
+    if (url.pathname === '/game/record') {
+      // 处理 POST 请求（JSON body）
+      if (req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => {
+          body += chunk.toString();
+        });
+        req.on('end', () => {
+          try {
+            const params = JSON.parse(body);
+            const timestamp = params.timestamp;
+            const type = params.type;
+            const duration = params.duration;
+            
+            // 打印参数日志
+            info('RECORDED - timestamp: %s, type: %s, duration: %s', timestamp, type, duration);
+            
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ 
+              status: 'ok', 
+              message: 'Record received',
+              timestamp: new Date().toISOString()
+            }));
+          } catch (err) {
+            error('Error parsing JSON body: %s', err.message);
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+      
+      // 处理 GET 请求（查询参数）
+      if (req.method === 'GET') {
+        const timestamp = url.searchParams.get('timestamp');
+        const type = url.searchParams.get('type');
+        const duration = url.searchParams.get('duration');
+        
+        // 打印参数日志
+        info('RECORDED - timestamp: %s, type: %s, duration: %s', timestamp, type, duration);
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+          status: 'ok', 
+          message: 'Record received',
+          timestamp: new Date().toISOString()
+        }));
+        return;
+      }
+      
+      // 不支持的请求方法
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
     }
     
@@ -319,30 +413,6 @@ function createServer() {
         res.end(content);
       } catch (err) {
         error('Error serving config for app %s: %s', appName, err.message);
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end('Internal Server Error');
-      }
-      return;
-    }
-    
-    // 向后兼容：旧格式 /version.yaml 和 /config
-    if (url.pathname === '/version.yaml' || url.pathname === '/config') {
-      try {
-        // 尝试使用默认应用名 'default'
-        const configFile = getAppConfigFile('default');
-        if (!fs.existsSync(configFile)) {
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
-          res.end('Config file not found. Use /ota/<app_name>/version.yaml format.');
-          return;
-        }
-        const content = fs.readFileSync(configFile, 'utf8');
-        res.writeHead(200, { 
-          'Content-Type': 'application/x-yaml',
-          'Cache-Control': 'no-cache'
-        });
-        res.end(content);
-      } catch (err) {
-        error('Error serving config: %s', err.message);
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Internal Server Error');
       }
@@ -527,6 +597,7 @@ function start() {
     info('📍 Listening on %s:%d', HOST, PORT);
     info('🌐 Base URL: %s', BASE_URL);
     info('📁 Apps directory: %s', APPS_DIR);
+    info('📝 Log file: %s', LOG_FILE);
     info('');
     info('Endpoints:');
     info('  GET /ota/<app_name>/version.yaml  - Application configuration');
@@ -535,6 +606,7 @@ function start() {
     info('  GET /ota/<app_name>/agents         - Agent status for application');
     info('  GET /health                        - Health check');
     info('  GET /info                          - Server information (list all apps)');
+    info('  GET/POST /game/record              - Game record endpoint');
     info('');
   });
   

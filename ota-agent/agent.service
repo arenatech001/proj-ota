@@ -1,0 +1,19 @@
+[Unit]
+Description=OTA Agent Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/home/arenatech/client/bin/ota-agent \
+  -config-url="http://www.arenatech.cn/ota/client-arm64/version.yaml" \
+  -version-file="/home/arenatech/client/bin/version" \
+  -agent-id="Go2-001" \
+  -start-cmd="/home/arenatech/client/bin/client-arm64.bin" \
+  -check-interval=5m \
+  -daemon=true
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
