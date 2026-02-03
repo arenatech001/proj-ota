@@ -900,7 +900,7 @@ function createServer() {
                             <td>\${record.id}</td>
                             <td>\${formatCreatedAt(record.created_at)}</td>
                             <td>\${record.type || '-'}</td>
-                            <td>\${record.duration != null ? record.duration : '-'}</td>
+                            <td>\${record.duration != null ? Math.round(record.duration / 1000) : '-'}</td>
                         </tr>\`;
                     });
                     tableHTML += '</tbody></table>';
