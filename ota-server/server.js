@@ -74,21 +74,21 @@ function insertGameRecord(timestamp, type, duration) {
   });
 }
 
-// 查询游戏记录
-function queryGameRecords(date, type, duration) {
+// 查询游戏记录（日期区间：dateStart、dateEnd 均为 YYYY-MM-DD，闭区间）
+function queryGameRecords(dateStart, dateEnd, type, duration) {
   return new Promise((resolve, reject) => {
     let query = 'SELECT * FROM game_records WHERE 1=1';
     const params = [];
     
-    if (date) {
-      // 按日期过滤（timestamp 是 Unix 时间戳，需要转换为日期进行比较）
-      // 将日期字符串转换为 Unix 时间戳范围
-      // 使用本地时区的 00:00:00 和 23:59:59
-      const dateObj = new Date(date + 'T00:00:00');
-      const startTimestamp = Math.floor(dateObj.getTime() / 1000);
-      const endTimestamp = startTimestamp + 86400; // 加一天（86400秒）
+    if (dateStart || dateEnd) {
+      const start = dateStart || dateEnd;
+      const end = dateEnd || dateStart;
+      const startObj = new Date(start + 'T00:00:00');
+      const endObj = new Date(end + 'T00:00:00');
+      const startTimestamp = Math.floor(startObj.getTime() / 1000);
+      const endTimestamp = Math.floor(endObj.getTime() / 1000) + 86400; // 结束日期的次日 00:00
       
-      info('Query date filter: date=%s, startTimestamp=%d, endTimestamp=%d', date, startTimestamp, endTimestamp);
+      info('Query date range: %s ~ %s, startTimestamp=%d, endTimestamp=%d', start, end, startTimestamp, endTimestamp);
       
       query += ' AND CAST(timestamp AS INTEGER) >= ? AND CAST(timestamp AS INTEGER) < ?';
       params.push(startTimestamp, endTimestamp);
@@ -774,8 +774,12 @@ function createServer() {
         <div class="filters">
             <div class="filter-group">
                 <div class="filter-item">
-                    <label for="date">日期</label>
-                    <input type="date" id="date" name="date">
+                    <label for="dateStart">开始日期</label>
+                    <input type="date" id="dateStart" name="dateStart">
+                </div>
+                <div class="filter-item">
+                    <label for="dateEnd">结束日期</label>
+                    <input type="date" id="dateEnd" name="dateEnd">
                 </div>
                 <div class="filter-item">
                     <label for="type">类型</label>
@@ -825,12 +829,14 @@ function createServer() {
         
         // 查询记录
         async function queryRecords() {
-            const date = document.getElementById('date').value;
+            const dateStart = document.getElementById('dateStart').value;
+            const dateEnd = document.getElementById('dateEnd').value;
             const type = document.getElementById('type').value;
             const duration = document.getElementById('duration').value;
             
             const params = new URLSearchParams();
-            if (date) params.append('date', date);
+            if (dateStart) params.append('dateStart', dateStart);
+            if (dateEnd) params.append('dateEnd', dateEnd);
             if (type) params.append('type', type);
             if (duration) params.append('duration', duration);
             
@@ -917,7 +923,8 @@ function createServer() {
         
         // 重置过滤器
         function resetFilters() {
-            document.getElementById('date').value = '';
+            document.getElementById('dateStart').value = '';
+            document.getElementById('dateEnd').value = '';
             document.getElementById('type').value = '';
             document.getElementById('duration').value = '';
             document.getElementById('stats').style.display = 'none';
@@ -952,7 +959,8 @@ function createServer() {
         function initPage() {
             loadTypes();
             var today = new Date().toISOString().split('T')[0];
-            document.getElementById('date').value = today;
+            document.getElementById('dateStart').value = today;
+            document.getElementById('dateEnd').value = today;
             queryRecords();
         }
         
@@ -1018,7 +1026,8 @@ function createServer() {
     // 游戏记录查询 API 端点: /game/records
     if (url.pathname === '/game/records') {
       if (req.method === 'GET') {
-        const date = url.searchParams.get('date');
+        const dateStart = url.searchParams.get('dateStart');
+        const dateEnd = url.searchParams.get('dateEnd');
         const type = url.searchParams.get('type');
         const duration = url.searchParams.get('duration');
         
@@ -1029,7 +1038,7 @@ function createServer() {
           return;
         }
         
-        queryGameRecords(date, type, duration)
+        queryGameRecords(dateStart, dateEnd, type, duration)
           .then((records) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
