@@ -3,6 +3,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const sqlite3 = require('sqlite3').verbose();
 
 // 从环境变量读取配置，提供默认值
 const PORT = process.env.PORT || 3000;
@@ -12,6 +13,8 @@ const APPS_DIR = process.env.APPS_DIR || path.join(__dirname, 'apps');
 const RESTART_CMD = process.env.RESTART_CMD || '';
 const LOG_DIR = process.env.LOG_DIR || path.join(__dirname, 'logs');
 const LOG_FILE = process.env.LOG_FILE || path.join(LOG_DIR, 'server.log');
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'game_records.db');
+const RECORDS_PASSWORD = process.env.RECORDS_PASSWORD || 'admin123456';
 
 // 确保应用目录存在
 if (!fs.existsSync(APPS_DIR)) {
@@ -21,6 +24,114 @@ if (!fs.existsSync(APPS_DIR)) {
 // 确保日志目录存在
 if (!fs.existsSync(LOG_DIR)) {
   fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+
+// 初始化 SQLite 数据库
+let db = null;
+function initDatabase() {
+  return new Promise((resolve, reject) => {
+    db = new sqlite3.Database(DB_PATH, (err) => {
+      if (err) {
+        error('Failed to open database: %s', err.message);
+        reject(err);
+        return;
+      }
+      info('Database connected: %s', DB_PATH);
+      
+      // 创建游戏记录表
+      db.run(`CREATE TABLE IF NOT EXISTS game_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        type TEXT,
+        duration INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`, (err) => {
+        if (err) {
+          error('Failed to create table: %s', err.message);
+          reject(err);
+          return;
+        }
+        info('Database table initialized');
+        resolve();
+      });
+    });
+  });
+}
+
+// 插入游戏记录
+function insertGameRecord(timestamp, type, duration) {
+  return new Promise((resolve, reject) => {
+    const stmt = db.prepare('INSERT INTO game_records (timestamp, type, duration) VALUES (?, ?, ?)');
+    stmt.run([timestamp, type, duration], function(err) {
+      if (err) {
+        error('Failed to insert record: %s', err.message);
+        reject(err);
+        return;
+      }
+      resolve(this.lastID);
+    });
+    stmt.finalize();
+  });
+}
+
+// 查询游戏记录
+function queryGameRecords(date, type, duration) {
+  return new Promise((resolve, reject) => {
+    let query = 'SELECT * FROM game_records WHERE 1=1';
+    const params = [];
+    
+    if (date) {
+      // 按日期过滤（timestamp 是 Unix 时间戳，需要转换为日期进行比较）
+      // 将日期字符串转换为 Unix 时间戳范围
+      // 使用本地时区的 00:00:00 和 23:59:59
+      const dateObj = new Date(date + 'T00:00:00');
+      const startTimestamp = Math.floor(dateObj.getTime() / 1000);
+      const endTimestamp = startTimestamp + 86400; // 加一天（86400秒）
+      
+      info('Query date filter: date=%s, startTimestamp=%d, endTimestamp=%d', date, startTimestamp, endTimestamp);
+      
+      query += ' AND CAST(timestamp AS INTEGER) >= ? AND CAST(timestamp AS INTEGER) < ?';
+      params.push(startTimestamp, endTimestamp);
+    }
+    
+    if (type) {
+      query += ' AND type = ?';
+      params.push(type);
+    }
+    
+    if (duration !== null && duration !== undefined && duration !== '') {
+      query += ' AND duration = ?';
+      params.push(parseInt(duration));
+    }
+    
+    query += ' ORDER BY CAST(timestamp AS INTEGER) DESC';
+    
+    info('Query SQL: %s, params: %j', query, params);
+    
+    db.all(query, params, (err, rows) => {
+      if (err) {
+        error('Failed to query records: %s', err.message);
+        reject(err);
+        return;
+      }
+      info('Query returned %d records', rows.length);
+      resolve(rows);
+    });
+  });
+}
+
+// 获取所有唯一的 type 值
+function getDistinctTypes() {
+  return new Promise((resolve, reject) => {
+    db.all('SELECT DISTINCT type FROM game_records WHERE type IS NOT NULL ORDER BY type', (err, rows) => {
+      if (err) {
+        error('Failed to get distinct types: %s', err.message);
+        reject(err);
+        return;
+      }
+      resolve(rows.map(row => row.type));
+    });
+  });
 }
 
 // Agent 状态存储
@@ -344,12 +455,30 @@ function createServer() {
             // 打印参数日志
             info('RECORDED - timestamp: %s, type: %s, duration: %s', timestamp, type, duration);
             
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ 
-              status: 'ok', 
-              message: 'Record received',
-              timestamp: new Date().toISOString()
-            }));
+            // 存储到数据库
+            if (!db) {
+              error('Database not initialized');
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Database not initialized' }));
+              return;
+            }
+            
+            insertGameRecord(timestamp, type, duration)
+              .then((recordId) => {
+                info('Record saved to database with ID: %d', recordId);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ 
+                  status: 'ok', 
+                  message: 'Record saved',
+                  id: recordId,
+                  timestamp: new Date().toISOString()
+                }));
+              })
+              .catch((err) => {
+                error('Failed to save record: %s', err.message);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Failed to save record', message: err.message }));
+              });
           } catch (err) {
             error('Error parsing JSON body: %s', err.message);
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -368,16 +497,555 @@ function createServer() {
         // 打印参数日志
         info('RECORDED - timestamp: %s, type: %s, duration: %s', timestamp, type, duration);
         
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ 
-          status: 'ok', 
-          message: 'Record received',
-          timestamp: new Date().toISOString()
-        }));
+        // 存储到数据库
+        if (!db) {
+          error('Database not initialized');
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Database not initialized' }));
+          return;
+        }
+        
+        insertGameRecord(timestamp, type, duration)
+          .then((recordId) => {
+            info('Record saved to database with ID: %d', recordId);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ 
+              status: 'ok', 
+              message: 'Record saved',
+              id: recordId,
+              timestamp: new Date().toISOString()
+            }));
+          })
+          .catch((err) => {
+            error('Failed to save record: %s', err.message);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Failed to save record', message: err.message }));
+          });
         return;
       }
       
       // 不支持的请求方法
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    
+    // 游戏记录查询页面: /game/records.html
+    if (url.pathname === '/game/records.html') {
+      if (req.method === 'GET') {
+        // 返回查询页面 HTML
+        const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>游戏记录查询</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+        .filters {
+            padding: 30px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .filter-group {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .filter-item {
+            display: flex;
+            flex-direction: column;
+        }
+        .filter-item label {
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #333;
+        }
+        .filter-item input,
+        .filter-item select {
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        .filter-item input:focus,
+        .filter-item select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+        .results {
+            padding: 30px;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .stat-card .value {
+            font-size: 2em;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        .stat-card .label {
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+        .table-container {
+            overflow-x: auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        thead {
+            background: #f8f9fa;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        th {
+            font-weight: 600;
+            color: #333;
+        }
+        tbody tr:hover {
+            background: #f8f9fa;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 20px 0;
+        }
+        .empty {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+        .login-container {
+            max-width: 400px;
+            margin: 100px auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 40px;
+        }
+        .login-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .login-header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .login-form {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .login-form input {
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        .login-form input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .login-error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            display: none;
+        }
+        .main-content {
+            display: none;
+        }
+        .main-content.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <!-- 登录界面 -->
+    <div id="loginContainer" class="login-container">
+        <div class="login-header">
+            <h1>🔐 身份验证</h1>
+            <p>请输入密码以访问游戏记录查询</p>
+        </div>
+        <div class="login-form">
+            <input type="password" id="passwordInput" placeholder="请输入密码" autocomplete="off">
+            <div id="loginError" class="login-error"></div>
+            <button class="btn-primary" onclick="handleLogin()">登录</button>
+        </div>
+    </div>
+    
+    <!-- 主内容界面 -->
+    <div id="mainContent" class="main-content">
+    <div class="container">
+        <div class="header">
+            <h1>🎮 游戏记录查询</h1>
+            <p>查询和筛选游戏记录数据</p>
+        </div>
+        
+        <div class="filters">
+            <div class="filter-group">
+                <div class="filter-item">
+                    <label for="date">日期</label>
+                    <input type="date" id="date" name="date">
+                </div>
+                <div class="filter-item">
+                    <label for="type">类型</label>
+                    <select id="type" name="type">
+                        <option value="">全部</option>
+                    </select>
+                </div>
+                <div class="filter-item">
+                    <label for="duration">时长（秒）</label>
+                    <input type="number" id="duration" name="duration" placeholder="留空表示全部">
+                </div>
+            </div>
+            <div class="btn-group">
+                <button class="btn-primary" onclick="queryRecords()">查询</button>
+                <button class="btn-secondary" onclick="resetFilters()">重置</button>
+            </div>
+        </div>
+        
+        <div class="results">
+            <div id="stats" class="stats" style="display: none;"></div>
+            <div id="loading" class="loading" style="display: none;">加载中...</div>
+            <div id="error" class="error" style="display: none;"></div>
+            <div id="table-container" class="table-container"></div>
+        </div>
+    </div>
+    
+    <script>
+        // 加载所有类型选项
+        async function loadTypes() {
+            try {
+                const response = await fetch('/game/records');
+                const data = await response.json();
+                if (data.records) {
+                    const types = [...new Set(data.records.map(r => r.type).filter(t => t))];
+                    const typeSelect = document.getElementById('type');
+                    types.forEach(type => {
+                        const option = document.createElement('option');
+                        option.value = type;
+                        option.textContent = type;
+                        typeSelect.appendChild(option);
+                    });
+                }
+            } catch (err) {
+                console.error('Failed to load types:', err);
+            }
+        }
+        
+        // 查询记录
+        async function queryRecords() {
+            const date = document.getElementById('date').value;
+            const type = document.getElementById('type').value;
+            const duration = document.getElementById('duration').value;
+            
+            const params = new URLSearchParams();
+            if (date) params.append('date', date);
+            if (type) params.append('type', type);
+            if (duration) params.append('duration', duration);
+            
+            const loading = document.getElementById('loading');
+            const error = document.getElementById('error');
+            const stats = document.getElementById('stats');
+            const tableContainer = document.getElementById('table-container');
+            
+            loading.style.display = 'block';
+            error.style.display = 'none';
+            stats.style.display = 'none';
+            tableContainer.innerHTML = '';
+            
+            try {
+                const response = await fetch('/game/records?' + params.toString());
+                const data = await response.json();
+                
+                loading.style.display = 'none';
+                
+                if (data.error) {
+                    error.textContent = '错误: ' + data.error;
+                    error.style.display = 'block';
+                    return;
+                }
+                
+                if (data.records && data.records.length > 0) {
+                    // 显示统计信息
+                    const totalDuration = Math.round(data.records.reduce((sum, r) => sum + (r.duration || 0), 0) / 1000); // 转换为秒 整数
+                    const avgDuration = Math.round(totalDuration / data.records.length);
+                    const typeCount = new Set(data.records.map(r => r.type).filter(t => t)).size;
+                    
+                    stats.innerHTML = \`
+                        <div class="stat-card">
+                            <div class="value">\${data.count}</div>
+                            <div class="label">总记录数</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="value">\${typeCount}</div>
+                            <div class="label">类型数</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="value">\${avgDuration}</div>
+                            <div class="label">平均时长（秒）</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="value">\${totalDuration}</div>
+                            <div class="label">总时长（秒）</div>
+                        </div>
+                    \`;
+                    stats.style.display = 'grid';
+                    
+                    // 显示表格（created_at 为 SQLite UTC 时间，转为本地时间显示）
+                    function formatCreatedAt(createdAt) {
+                        if (!createdAt) return '-';
+                        // SQLite CURRENT_TIMESTAMP 存的是 UTC，格式 "YYYY-MM-DD HH:MM:SS"，无 Z 后缀
+                        var s = String(createdAt).trim().replace(' ', 'T');
+                        if (!/Z|[+-]\\d{2}:?\\d{2}$/.test(s)) s += 'Z';
+                        try {
+                            return new Date(s).toLocaleString('zh-CN', { hour12: false });
+                        } catch (e) {
+                            return createdAt;
+                        }
+                    }
+                    let tableHTML = '<table><thead><tr><th>ID</th><th>时间</th><th>类型</th><th>时长（秒）</th></tr></thead><tbody>';
+                    data.records.forEach(record => {
+                        tableHTML += \`<tr>
+                            <td>\${record.id}</td>
+                            <td>\${formatCreatedAt(record.created_at)}</td>
+                            <td>\${record.type || '-'}</td>
+                            <td>\${record.duration != null ? record.duration : '-'}</td>
+                        </tr>\`;
+                    });
+                    tableHTML += '</tbody></table>';
+                    tableContainer.innerHTML = tableHTML;
+                } else {
+                    tableContainer.innerHTML = '<div class="empty">没有找到匹配的记录</div>';
+                }
+            } catch (err) {
+                loading.style.display = 'none';
+                error.textContent = '查询失败: ' + err.message;
+                error.style.display = 'block';
+            }
+        }
+        
+        // 重置过滤器
+        function resetFilters() {
+            document.getElementById('date').value = '';
+            document.getElementById('type').value = '';
+            document.getElementById('duration').value = '';
+            document.getElementById('stats').style.display = 'none';
+            document.getElementById('table-container').innerHTML = '';
+            document.getElementById('error').style.display = 'none';
+        }
+        
+        function checkAuth() {
+            return sessionStorage.getItem('records_authenticated') === 'true';
+        }
+        async function handleLogin() {
+            var pwd = document.getElementById('passwordInput').value;
+            var errEl = document.getElementById('loginError');
+            if (!pwd) { errEl.textContent = '请输入密码'; errEl.style.display = 'block'; return; }
+            try {
+                var r = await fetch('/game/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pwd }) });
+                var data = await r.json();
+                if (data.status === 'ok') {
+                    sessionStorage.setItem('records_authenticated', 'true');
+                    document.getElementById('loginContainer').style.display = 'none';
+                    document.getElementById('mainContent').classList.add('active');
+                    initPage();
+                } else {
+                    errEl.textContent = data.error || '密码错误';
+                    errEl.style.display = 'block';
+                }
+            } catch (e) {
+                errEl.textContent = '登录失败: ' + e.message;
+                errEl.style.display = 'block';
+            }
+        }
+        function initPage() {
+            loadTypes();
+            var today = new Date().toISOString().split('T')[0];
+            document.getElementById('date').value = today;
+            queryRecords();
+        }
+        
+        // 页面加载时初始化
+        window.onload = function() {
+            if (checkAuth()) {
+                document.getElementById('loginContainer').style.display = 'none';
+                document.getElementById('mainContent').classList.add('active');
+                initPage();
+            } else {
+                document.getElementById('passwordInput').addEventListener('keypress', function(e) { if (e.key === 'Enter') handleLogin(); });
+            }
+        };
+    </script>
+</body>
+</html>`;
+        
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html);
+        return;
+      }
+    }
+    
+    // 密码验证接口: /game/auth
+    if (url.pathname === '/game/auth') {
+      if (req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => {
+          body += chunk.toString();
+        });
+        req.on('end', () => {
+          try {
+            const params = JSON.parse(body);
+            const password = params.password;
+            
+            if (password && password === RECORDS_PASSWORD) {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ 
+                status: 'ok', 
+                message: 'Authentication successful'
+              }));
+            } else {
+              res.writeHead(401, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ 
+                status: 'error', 
+                error: 'Invalid password'
+              }));
+            }
+          } catch (err) {
+            error('Error parsing auth request: %s', err.message);
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+      
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    
+    // 游戏记录查询 API 端点: /game/records
+    if (url.pathname === '/game/records') {
+      if (req.method === 'GET') {
+        const date = url.searchParams.get('date');
+        const type = url.searchParams.get('type');
+        const duration = url.searchParams.get('duration');
+        
+        if (!db) {
+          error('Database not initialized');
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Database not initialized' }));
+          return;
+        }
+        
+        queryGameRecords(date, type, duration)
+          .then((records) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              status: 'ok',
+              count: records.length,
+              records: records
+            }, null, 2));
+          })
+          .catch((err) => {
+            error('Failed to query records: %s', err.message);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Failed to query records', message: err.message }));
+          });
+        return;
+      }
+      
       res.writeHead(405, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
@@ -585,48 +1253,84 @@ function createServer() {
 
 // 启动服务器
 function start() {
-  const server = createServer();
-  
-  server.on('error', (err) => {
-    error('Server error: %s', err.message);
-    process.exit(1);
-  });
-  
-  server.listen(PORT, HOST, () => {
-    info('🚀 OTA Update Server started');
-    info('📍 Listening on %s:%d', HOST, PORT);
-    info('🌐 Base URL: %s', BASE_URL);
-    info('📁 Apps directory: %s', APPS_DIR);
-    info('📝 Log file: %s', LOG_FILE);
-    info('');
-    info('Endpoints:');
-    info('  GET /ota/<app_name>/version.yaml  - Application configuration');
-    info('  GET /ota/<app_name>/files/<file>  - Application file download');
-    info('  GET /ota/<app_name>/info           - Application information');
-    info('  GET /ota/<app_name>/agents         - Agent status for application');
-    info('  GET /health                        - Health check');
-    info('  GET /info                          - Server information (list all apps)');
-    info('  GET/POST /game/record              - Game record endpoint');
-    info('');
-  });
-  
-  // 优雅关闭
-  process.on('SIGTERM', () => {
-    info('SIGTERM received, shutting down gracefully...');
-    server.close(() => {
-      info('Server closed');
-      process.exit(0);
+  // 初始化数据库
+  initDatabase()
+    .then(() => {
+      const server = createServer();
+      
+      server.on('error', (err) => {
+        error('Server error: %s', err.message);
+        process.exit(1);
+      });
+      
+      server.listen(PORT, HOST, () => {
+        info('🚀 OTA Update Server started');
+        info('📍 Listening on %s:%d', HOST, PORT);
+        info('🌐 Base URL: %s', BASE_URL);
+        info('📁 Apps directory: %s', APPS_DIR);
+        info('📝 Log file: %s', LOG_FILE);
+        info('💾 Database: %s', DB_PATH);
+        info('');
+        info('Endpoints:');
+        info('  GET /ota/<app_name>/version.yaml  - Application configuration');
+        info('  GET /ota/<app_name>/files/<file>  - Application file download');
+        info('  GET /ota/<app_name>/info           - Application information');
+        info('  GET /ota/<app_name>/agents         - Agent status for application');
+        info('  GET /health                        - Health check');
+        info('  GET /info                          - Server information (list all apps)');
+        info('  GET/POST /game/record              - Game record endpoint');
+        info('  GET /game/records                  - Query game records API');
+        info('  GET /game/records.html             - Game records query page');
+        info('');
+      });
+      
+      // 优雅关闭
+      process.on('SIGTERM', () => {
+        info('SIGTERM received, shutting down gracefully...');
+        server.close(() => {
+          if (db) {
+            db.close((err) => {
+              if (err) {
+                error('Error closing database: %s', err.message);
+              } else {
+                info('Database closed');
+              }
+              info('Server closed');
+              process.exit(0);
+            });
+          } else {
+            info('Server closed');
+            process.exit(0);
+          }
+        });
+      });
+      
+      process.on('SIGINT', () => {
+        info('SIGINT received, shutting down gracefully...');
+        server.close(() => {
+          if (db) {
+            db.close((err) => {
+              if (err) {
+                error('Error closing database: %s', err.message);
+              } else {
+                info('Database closed');
+              }
+              info('Server closed');
+              process.exit(0);
+            });
+          } else {
+            info('Server closed');
+            process.exit(0);
+          }
+        });
+      });
+    })
+    .catch((err) => {
+      error('Failed to initialize database: %s', err.message);
+      process.exit(1);
     });
-  });
-  
-  process.on('SIGINT', () => {
-    info('SIGINT received, shutting down gracefully...');
-    server.close(() => {
-      info('Server closed');
-      process.exit(0);
-    });
-  });
 }
+  
 
 // 如果直接运行此文件，启动服务器
 if (require.main === module) {

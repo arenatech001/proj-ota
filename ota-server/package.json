@@ -5,14 +5,24 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "BASE_URL=http://localhost:3000 node server.js",
+    "dev": "cross-env BASE_URL=http://localhost:3000 node server.js",
     "update": "python3 update-version.py"
   },
-  "keywords": ["ota", "update", "server", "deployment"],
+  "keywords": [
+    "ota",
+    "update",
+    "server",
+    "deployment"
+  ],
   "author": "",
   "license": "MIT",
   "engines": {
     "node": ">=14.0.0"
+  },
+  "dependencies": {
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0"
   }
 }
-

@@ -631,7 +631,9 @@ func main() {
 		runCmd = result.RestartCmd
 	}
 
-	runCmd = runCmd + " -id=" + *agentID
+	if *agentID != "" {
+		runCmd = runCmd + " -id=" + *agentID
+	}
 	logger.Info("runCmd: %s", runCmd)
 	if _, err := ensureManagedProcess(runCmd, "initial process start", logger); err != nil {
 		logger.Error("Start OTA agent runCommand failed: %v", err)
