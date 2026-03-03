@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
@@ -353,6 +355,78 @@ func checkWritePermission(targetPath string) error {
 	return nil
 }
 
+// isTgzFile returns true if the path looks like a .tgz or .tar.gz file
+func isTgzFile(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	return strings.HasSuffix(base, ".tgz") || strings.HasSuffix(base, ".tar.gz")
+}
+
+// extractTgz extracts a .tgz/.tar.gz file to destDir, overwriting existing files
+func extractTgz(archivePath, destDir string, logger *Logger) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("open archive: %w", err)
+	}
+	defer f.Close()
+
+	gr, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("gzip new reader: %w", err)
+	}
+	defer gr.Close()
+
+	tr := tar.NewReader(gr)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("tar next: %w", err)
+		}
+
+		// Safe path: prevent path traversal (e.g. ../../../etc/passwd)
+		destPath := filepath.Join(destDir, filepath.Clean(strings.TrimPrefix(hdr.Name, "/")))
+		rel, err := filepath.Rel(destDir, destPath)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			logger.Warn("skip path outside dest: %s", hdr.Name)
+			continue
+		}
+
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(destPath, 0755); err != nil {
+				return fmt.Errorf("mkdir %s: %w", destPath, err)
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+				return fmt.Errorf("mkdir parent %s: %w", filepath.Dir(destPath), err)
+			}
+			out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0777)
+			if err != nil {
+				return fmt.Errorf("create file %s: %w", destPath, err)
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				out.Close()
+				return fmt.Errorf("write file %s: %w", destPath, err)
+			}
+			out.Close()
+			logger.Info("extracted %s", destPath)
+		case tar.TypeSymlink:
+			if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+				return fmt.Errorf("mkdir parent %s: %w", filepath.Dir(destPath), err)
+			}
+			if err := os.Symlink(hdr.Linkname, destPath); err != nil {
+				logger.Warn("symlink %s -> %s: %v (skip)", destPath, hdr.Linkname, err)
+			}
+		default:
+			logger.Warn("skip unsupported entry type %d: %s", hdr.Typeflag, hdr.Name)
+		}
+	}
+	logger.Info("tgz extracted to %s", destDir)
+	return nil
+}
+
 func atomicReplace(newPath, targetPath string, logger *Logger) (backupPath string, err error) {
 	// ensure same dir for atomic rename
 	targetDir := filepath.Dir(targetPath)
@@ -470,17 +544,46 @@ func updateFile(file FileUpdate, restartCmd string, agentID string, timeout time
 	}
 	logger.Info("checksum verified for %s", file.Name)
 
-	// Atomic replace
-	logger.Info("replacing %s...", file.Target)
-	backup, err := atomicReplace(tmpFile, file.Target, logger)
-	if err != nil {
+	var backup string
+	if isTgzFile(file.Name) {
+		// tgz: extract to target directory and overwrite
+		extractDir := file.Target
+		info, err := os.Stat(extractDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				if err := os.MkdirAll(extractDir, 0755); err != nil {
+					_ = os.Remove(tmpFile)
+					return false, fmt.Errorf("create extract dir: %w", err)
+				}
+			} else {
+				_ = os.Remove(tmpFile)
+				return false, fmt.Errorf("stat target: %w", err)
+			}
+		} else if !info.IsDir() {
+			_ = os.Remove(tmpFile)
+			return false, fmt.Errorf("target for tgz must be a directory, got file: %s", extractDir)
+		}
+		logger.Info("extracting tgz to %s...", extractDir)
+		if err := extractTgz(tmpFile, extractDir, logger); err != nil {
+			_ = os.Remove(tmpFile)
+			return false, fmt.Errorf("extract tgz: %w", err)
+		}
 		_ = os.Remove(tmpFile)
-		return false, fmt.Errorf("replace error: %w", err)
-	}
-	if backup != "" {
-		logger.Info("replaced %s (backup=%s)", file.Target, backup)
+		logger.Info("tgz extracted and overwritten at %s", extractDir)
 	} else {
-		logger.Info("replaced %s (no previous version)", file.Target)
+		// single file: atomic replace
+		logger.Info("replacing %s...", file.Target)
+		var err error
+		backup, err = atomicReplace(tmpFile, file.Target, logger)
+		if err != nil {
+			_ = os.Remove(tmpFile)
+			return false, fmt.Errorf("replace error: %w", err)
+		}
+		if backup != "" {
+			logger.Info("replaced %s (backup=%s)", file.Target, backup)
+		} else {
+			logger.Info("replaced %s (no previous version)", file.Target)
+		}
 	}
 
 	// Restart if needed
@@ -488,7 +591,7 @@ func updateFile(file FileUpdate, restartCmd string, agentID string, timeout time
 		logger.Info("restarting after %s update...", file.Name)
 		if err := runCommand(restartCmd); err != nil {
 			logger.Error("restart failed after %s update: %v", file.Name, err)
-			// Rollback
+			// Rollback (only for single-file replace, tgz has no backup)
 			if backup != "" {
 				logger.Info("attempting rollback for %s", file.Name)
 				if err := os.Rename(backup, file.Target); err != nil {
