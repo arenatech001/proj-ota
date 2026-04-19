@@ -57,7 +57,33 @@ systemctl enable $SERVICE_NAME
 systemctl start $SERVICE_NAME
 info "      已安装并启动 $SERVICE_NAME"
 
+
+# set -euo pipefail
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential \
+  pkg-config \
+  libsdl2-dev \
+  libsdl2-mixer-dev
+
+export ALSA_CARD=2
+export ALSA_PCM_CARD=2
+export ALSA_CTL_CARD=2
+
+cat > ~/.asoundrc <<'EOF'
+pcm.!default {
+  type plug
+  slave.pcm "hw:2,0"
+}
+ctl.!default {
+  type hw
+  card 2
+}
+EOF
+
 echo ""
 info "部署完成。"
 echo "  查看状态: systemctl status $SERVICE_NAME"
 echo "  查看日志: journalctl -u $SERVICE_NAME -f"
+
+

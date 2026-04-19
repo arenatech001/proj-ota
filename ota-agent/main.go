@@ -698,8 +698,8 @@ func main() {
 	cfgURL := flag.String("config-url", "", "URL to version.yaml (required)")
 	versionFile := flag.String("version-file", defaultVersionFile, "local version file path")
 	agentID := flag.String("agent-id", "", "Agent identifier (sent as X-Agent-ID header)")
-	startCmd := flag.String("start-cmd", "", "Local command for initial process start (used when no update needed)")
-	timeout := flag.Duration("timeout", 30*time.Second, "http timeout")
+	startCmd := flag.String("start-cmd", "", "Local command for managed process (started immediately; OTA does not block startup)")
+	timeout := flag.Duration("timeout", 5*time.Second, "http timeout")	
 	maxRetries := flag.Int("max-retries", 3, "maximum number of retries for HTTP requests")
 	checkInterval := flag.Duration("check-interval", 5*time.Minute, "check interval for daemon mode")
 	daemon := flag.Bool("daemon", true, "run as daemon (default: true)")
@@ -724,16 +724,6 @@ func main() {
 	}
 
 	runCmd := *startCmd
-
-	result := checkUpdate(*cfgURL, *versionFile, *agentID, *timeout, *maxRetries, logger)
-	if result.Error != nil {
-		logger.Error("Start OTA agent checkUpdate failed: %v", result.Error)
-	}
-
-	if result.Error == nil && result.Updated && result.RestartCmd != "" {
-		runCmd = result.RestartCmd
-	}
-
 	if *agentID != "" {
 		runCmd = runCmd + " -id=" + *agentID
 	}
@@ -742,11 +732,27 @@ func main() {
 		logger.Error("Start OTA agent runCommand failed: %v", err)
 	}
 
+	// OTA 检查在进程已启动后进行，避免无网络时长时间阻塞启动。
+	// 更新落盘后由下次重启 ota-agent / 业务进程生效（与周期检查行为一致）。
+	runInitialUpdateCheck := func() {
+		result := checkUpdate(*cfgURL, *versionFile, *agentID, *timeout, *maxRetries, logger)
+		if result.Error != nil {
+			logger.Error("initial update check failed: %v", result.Error)
+			return
+		}
+		if result.Updated {
+			logger.Info("initial update applied; new artifacts take effect after next restart (ota-agent or managed process as you deploy)")
+		}
+	}
+
 	// Run once or as daemon
 	if !*daemon {
+		runInitialUpdateCheck()
 		logger.Info("single-run mode, exiting")
 		return
 	}
+
+	go runInitialUpdateCheck()
 	logger.Info("starting OTA agent in daemon mode")
 
 	// Handle signals for graceful shutdown
@@ -773,9 +779,11 @@ func main() {
 			if result.Error != nil {
 				logger.Error("update check failed: %v", result.Error)
 			} else {
-				// 启动后如果更新不重启进程， 下一次启动生效
-				logger.Info("update success, last start cmd will be effective next time")
-				// handleProcessManagement(result)
+				if result.Updated {
+					logger.Info("periodic update applied; new artifacts take effect after next restart")
+				} else {
+					logger.Info("periodic check: no update needed")
+				}
 			}
 
 		case sig := <-sigChan:
