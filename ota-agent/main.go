@@ -230,8 +230,8 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func downloadFile(url, dest string, agentID string, timeout time.Duration, maxRetries int, logger *Logger) error {
-	client := &http.Client{Timeout: timeout}
+func downloadFile(url, dest string, agentID string, downloadTimeout time.Duration, maxRetries int, logger *Logger) error {
+	client := &http.Client{Timeout: downloadTimeout}
 	var resp *http.Response
 	var err error
 
@@ -514,7 +514,7 @@ func validateConfig(cfg *Config) error {
 }
 
 // updateFile updates a single file
-func updateFile(file FileUpdate, restartCmd string, agentID string, timeout time.Duration, maxRetries int, logger *Logger) (bool, error) {
+func updateFile(file FileUpdate, restartCmd string, agentID string, downloadTimeout time.Duration, maxRetries int, logger *Logger) (bool, error) {
 	logger.Info("updating file %s (target: %s)", file.Name, file.Target)
 
 	// Check write permission
@@ -526,7 +526,7 @@ func updateFile(file FileUpdate, restartCmd string, agentID string, timeout time
 	tmpDir := filepath.Dir(file.Target)
 	tmpFile := filepath.Join(tmpDir, fmt.Sprintf(".tmp-%s-%d", file.Name, time.Now().Unix()))
 	logger.Info("downloading %s to %s", file.Name, tmpFile)
-	if err := downloadFile(file.URL, tmpFile, agentID, timeout, maxRetries, logger); err != nil {
+	if err := downloadFile(file.URL, tmpFile, agentID, downloadTimeout, maxRetries, logger); err != nil {
 		_ = os.Remove(tmpFile)
 		return false, fmt.Errorf("download error: %w", err)
 	}
@@ -619,7 +619,7 @@ type UpdateResult struct {
 // checkUpdate checks for updates and applies them
 // Returns UpdateResult with update status and restart command
 // This function only handles file updates, not process management
-func checkUpdate(cfgURL string, versionFile string, agentID string, timeout time.Duration, maxRetries int, logger *Logger) UpdateResult {
+func checkUpdate(cfgURL string, versionFile string, agentID string, httpTimeout time.Duration, downloadTimeout time.Duration, maxRetries int, logger *Logger) UpdateResult {
 	logger.Info("checking for updates from %s", cfgURL)
 	// Read local version
 	localVer, err := readLocalVersion(versionFile)
@@ -628,7 +628,7 @@ func checkUpdate(cfgURL string, versionFile string, agentID string, timeout time
 		localVer = ""
 	}
 	// Fetch remote configuration
-	remoteCfg, err := fetchConfig(cfgURL, agentID, localVer, timeout, maxRetries, logger)
+	remoteCfg, err := fetchConfig(cfgURL, agentID, localVer, httpTimeout, maxRetries, logger)
 	if err != nil {
 		logger.Error("failed to fetch remote config: %v", err)
 		return UpdateResult{Error: fmt.Errorf("fetch config: %w", err)}
@@ -659,7 +659,7 @@ func checkUpdate(cfgURL string, versionFile string, agentID string, timeout time
 	updated := false
 	var lastErr error
 	for _, file := range files {
-		success, err := updateFile(file, "", agentID, timeout, maxRetries, logger)
+		success, err := updateFile(file, "", agentID, downloadTimeout, maxRetries, logger)
 		if err != nil {
 			logger.Error("failed to update %s: %v", file.Name, err)
 			lastErr = err
@@ -699,7 +699,8 @@ func main() {
 	versionFile := flag.String("version-file", defaultVersionFile, "local version file path")
 	agentID := flag.String("agent-id", "", "Agent identifier (sent as X-Agent-ID header)")
 	startCmd := flag.String("start-cmd", "", "Local command for managed process (started immediately; OTA does not block startup)")
-	timeout := flag.Duration("timeout", 5*time.Second, "http timeout")	
+	httpTimeout := flag.Duration("timeout", 30*time.Second, "HTTP timeout for fetching version.yaml (small responses)")
+	downloadTimeout := flag.Duration("download-timeout", 30*time.Minute, "HTTP timeout per file download (includes reading body; use 0 for no limit)")
 	maxRetries := flag.Int("max-retries", 3, "maximum number of retries for HTTP requests")
 	checkInterval := flag.Duration("check-interval", 5*time.Minute, "check interval for daemon mode")
 	daemon := flag.Bool("daemon", true, "run as daemon (default: true)")
@@ -717,6 +718,8 @@ func main() {
 	logger.Info("config URL: %s", *cfgURL)
 	logger.Info("agent ID: %s", *agentID)
 	logger.Info("check interval: %v", *checkInterval)
+	logger.Info("HTTP timeout (config): %v", *httpTimeout)
+	logger.Info("HTTP timeout (download): %v", *downloadTimeout)
 	logger.Info("version file: %s", *versionFile)
 	logger.Info("daemon mode: %t", *daemon)
 	if *startCmd != "" {
@@ -735,7 +738,7 @@ func main() {
 	// OTA 检查在进程已启动后进行，避免无网络时长时间阻塞启动。
 	// 更新落盘后由下次重启 ota-agent / 业务进程生效（与周期检查行为一致）。
 	runInitialUpdateCheck := func() {
-		result := checkUpdate(*cfgURL, *versionFile, *agentID, *timeout, *maxRetries, logger)
+		result := checkUpdate(*cfgURL, *versionFile, *agentID, *httpTimeout, *downloadTimeout, *maxRetries, logger)
 		if result.Error != nil {
 			logger.Error("initial update check failed: %v", result.Error)
 			return
@@ -775,7 +778,7 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			result := checkUpdate(*cfgURL, *versionFile, *agentID, *timeout, *maxRetries, logger)
+			result := checkUpdate(*cfgURL, *versionFile, *agentID, *httpTimeout, *downloadTimeout, *maxRetries, logger)
 			if result.Error != nil {
 				logger.Error("update check failed: %v", result.Error)
 			} else {

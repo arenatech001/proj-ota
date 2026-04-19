@@ -15,7 +15,7 @@ STAGE_DIR="$OUT_DIR/ota-agent-package"
 # 默认编译目标与版本（可被参数覆盖，与 build-ota-agent.ps1 一致）
 GOOS="${1:-linux}"
 GOARCH="${2:-arm64}"
-VERSION="${3:-v1.5}"
+VERSION="${3:-v2.0}"
 
 BINARY_NAME="ota-agent"
 if [[ "$GOOS" == "windows" ]]; then

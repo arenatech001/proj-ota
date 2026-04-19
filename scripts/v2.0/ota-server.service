@@ -1,0 +1,17 @@
+[Unit]
+Description=OTA Server Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/home/arenatech/server/bin/ota-agent \
+  -config-url="http://www.arenatech.cn/ota/server-arm64-v2.0/version.yaml" \
+  -version-file="/home/arenatech/server/bin/version" \
+  -start-cmd="/home/arenatech/server/bin/server-arm64.bin" \
+  -daemon=true
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

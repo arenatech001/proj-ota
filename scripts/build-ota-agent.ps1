@@ -5,7 +5,7 @@
 param(
     [string]$GoOs = "linux",
     [string]$GoArch = "arm64",
-    [string]$Version = "v1.5"
+    [string]$Version = "v2.0"
 )
 
 $ErrorActionPreference = "Stop"

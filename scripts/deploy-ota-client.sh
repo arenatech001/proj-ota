@@ -6,6 +6,7 @@ set -e
 
 BASE_DIR="/home/arenatech/client"
 BIN_DIR="$BASE_DIR/bin"
+AUDIO_DIR="$BASE_DIR/assets/audio"
 TOOLS_DIR="$BASE_DIR/tools"
 LOGS_DIR="$BASE_DIR/logs"
 CONFIG_DIR="$BASE_DIR/config"
@@ -28,8 +29,9 @@ echo "=========================================="
 
 # 第一步：创建目录
 info "[1/3] 创建目录..."
-mkdir -p "$BIN_DIR" "$TOOLS_DIR" "$LOGS_DIR" "$CONFIG_DIR"
+mkdir -p "$BIN_DIR" "$AUDIO_DIR" "$TOOLS_DIR" "$LOGS_DIR" "$CONFIG_DIR"
 info "      $BIN_DIR"
+info "      $AUDIO_DIR"
 info "      $TOOLS_DIR"
 info "      $LOGS_DIR"
 info "      $CONFIG_DIR"
