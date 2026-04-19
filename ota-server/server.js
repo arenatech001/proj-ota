@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const sqlite3 = require('sqlite3').verbose();
 
 // 从环境变量读取配置，提供默认值
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 const APPS_DIR = process.env.APPS_DIR || path.join(__dirname, 'apps');
@@ -44,6 +44,7 @@ function initDatabase() {
         timestamp TEXT NOT NULL,
         type TEXT,
         duration INTEGER,
+        location TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`, (err) => {
         if (err) {
@@ -51,18 +52,27 @@ function initDatabase() {
           reject(err);
           return;
         }
-        info('Database table initialized');
-        resolve();
+        // 已有库升级：补充 location 列（新库已在 CREATE 中包含）
+        db.run('ALTER TABLE game_records ADD COLUMN location TEXT', (alterErr) => {
+          if (alterErr && !String(alterErr.message).includes('duplicate column')) {
+            error('Failed to add location column: %s', alterErr.message);
+            reject(alterErr);
+            return;
+          }
+          info('Database table initialized');
+          resolve();
+        });
       });
     });
   });
 }
 
 // 插入游戏记录
-function insertGameRecord(timestamp, type, duration) {
+function insertGameRecord(timestamp, type, duration, location) {
   return new Promise((resolve, reject) => {
-    const stmt = db.prepare('INSERT INTO game_records (timestamp, type, duration) VALUES (?, ?, ?)');
-    stmt.run([timestamp, type, duration], function(err) {
+    const loc = location === undefined || location === null || location === '' ? null : String(location);
+    const stmt = db.prepare('INSERT INTO game_records (timestamp, type, duration, location) VALUES (?, ?, ?, ?)');
+    stmt.run([timestamp, type, duration, loc], function(err) {
       if (err) {
         error('Failed to insert record: %s', err.message);
         reject(err);
@@ -75,7 +85,7 @@ function insertGameRecord(timestamp, type, duration) {
 }
 
 // 查询游戏记录（日期区间：dateStart、dateEnd 均为 YYYY-MM-DD，闭区间）
-function queryGameRecords(dateStart, dateEnd, type, duration) {
+function queryGameRecords(dateStart, dateEnd, type, duration, location) {
   return new Promise((resolve, reject) => {
     let query = 'SELECT * FROM game_records WHERE 1=1';
     const params = [];
@@ -102,6 +112,11 @@ function queryGameRecords(dateStart, dateEnd, type, duration) {
     if (duration !== null && duration !== undefined && duration !== '') {
       query += ' AND duration = ?';
       params.push(parseInt(duration));
+    }
+    
+    if (location) {
+      query += ' AND location = ?';
+      params.push(location);
     }
     
     query += ' ORDER BY CAST(timestamp AS INTEGER) DESC';
@@ -451,9 +466,10 @@ function createServer() {
             const timestamp = params.timestamp;
             const type = params.type;
             const duration = params.duration;
+            const location = params.location;
             
             // 打印参数日志
-            info('RECORDED - timestamp: %s, type: %s, duration: %s', timestamp, type, duration);
+            info('RECORDED - timestamp: %s, type: %s, duration: %s, location: %s', timestamp, type, duration, location);
             
             // 存储到数据库
             if (!db) {
@@ -463,7 +479,7 @@ function createServer() {
               return;
             }
             
-            insertGameRecord(timestamp, type, duration)
+            insertGameRecord(timestamp, type, duration, location)
               .then((recordId) => {
                 info('Record saved to database with ID: %d', recordId);
                 res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -493,9 +509,10 @@ function createServer() {
         const timestamp = url.searchParams.get('timestamp');
         const type = url.searchParams.get('type');
         const duration = url.searchParams.get('duration');
+        const location = url.searchParams.get('location');
         
         // 打印参数日志
-        info('RECORDED - timestamp: %s, type: %s, duration: %s', timestamp, type, duration);
+        info('RECORDED - timestamp: %s, type: %s, duration: %s, location: %s', timestamp, type, duration, location);
         
         // 存储到数据库
         if (!db) {
@@ -505,7 +522,7 @@ function createServer() {
           return;
         }
         
-        insertGameRecord(timestamp, type, duration)
+        insertGameRecord(timestamp, type, duration, location)
           .then((recordId) => {
             info('Record saved to database with ID: %d', recordId);
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -791,6 +808,12 @@ function createServer() {
                     <label for="duration">时长（秒）</label>
                     <input type="number" id="duration" name="duration" placeholder="留空表示全部">
                 </div>
+                <div class="filter-item">
+                    <label for="location">地点</label>
+                    <select id="location" name="location">
+                        <option value="">全部</option>
+                    </select>
+                </div>
             </div>
             <div class="btn-group">
                 <button class="btn-primary" onclick="queryRecords()">查询</button>
@@ -807,23 +830,33 @@ function createServer() {
     </div>
     
     <script>
-        // 加载所有类型选项
-        async function loadTypes() {
+        // 从全量记录填充类型、地点下拉选项
+        async function loadFilterOptions() {
             try {
                 const response = await fetch('/game/records');
                 const data = await response.json();
                 if (data.records) {
-                    const types = [...new Set(data.records.map(r => r.type).filter(t => t))];
+                    const types = [...new Set(data.records.map(r => r.type).filter(t => t))].sort();
                     const typeSelect = document.getElementById('type');
+                    while (typeSelect.options.length > 1) typeSelect.remove(1);
                     types.forEach(type => {
                         const option = document.createElement('option');
                         option.value = type;
                         option.textContent = type;
                         typeSelect.appendChild(option);
                     });
+                    const locs = [...new Set(data.records.map(r => r.location).filter(l => l))].sort();
+                    const locSelect = document.getElementById('location');
+                    while (locSelect.options.length > 1) locSelect.remove(1);
+                    locs.forEach(loc => {
+                        const option = document.createElement('option');
+                        option.value = loc;
+                        option.textContent = loc;
+                        locSelect.appendChild(option);
+                    });
                 }
             } catch (err) {
-                console.error('Failed to load types:', err);
+                console.error('Failed to load filter options:', err);
             }
         }
         
@@ -833,12 +866,14 @@ function createServer() {
             const dateEnd = document.getElementById('dateEnd').value;
             const type = document.getElementById('type').value;
             const duration = document.getElementById('duration').value;
+            const location = document.getElementById('location').value;
             
             const params = new URLSearchParams();
             if (dateStart) params.append('dateStart', dateStart);
             if (dateEnd) params.append('dateEnd', dateEnd);
             if (type) params.append('type', type);
             if (duration) params.append('duration', duration);
+            if (location) params.append('location', location);
             
             const loading = document.getElementById('loading');
             const error = document.getElementById('error');
@@ -900,12 +935,13 @@ function createServer() {
                             return createdAt;
                         }
                     }
-                    let tableHTML = '<table><thead><tr><th>ID</th><th>时间</th><th>类型</th><th>时长（秒）</th></tr></thead><tbody>';
+                    let tableHTML = '<table><thead><tr><th>ID</th><th>时间</th><th>类型</th><th>地点</th><th>时长（秒）</th></tr></thead><tbody>';
                     data.records.forEach(record => {
                         tableHTML += \`<tr>
                             <td>\${record.id}</td>
                             <td>\${formatCreatedAt(record.created_at)}</td>
                             <td>\${record.type || '-'}</td>
+                            <td>\${record.location || '-'}</td>
                             <td>\${record.duration != null ? Math.round(record.duration / 1000) : '-'}</td>
                         </tr>\`;
                     });
@@ -927,6 +963,7 @@ function createServer() {
             document.getElementById('dateEnd').value = '';
             document.getElementById('type').value = '';
             document.getElementById('duration').value = '';
+            document.getElementById('location').value = '';
             document.getElementById('stats').style.display = 'none';
             document.getElementById('table-container').innerHTML = '';
             document.getElementById('error').style.display = 'none';
@@ -957,7 +994,7 @@ function createServer() {
             }
         }
         function initPage() {
-            loadTypes();
+            loadFilterOptions();
             var today = new Date().toISOString().split('T')[0];
             document.getElementById('dateStart').value = today;
             document.getElementById('dateEnd').value = today;
@@ -1030,6 +1067,7 @@ function createServer() {
         const dateEnd = url.searchParams.get('dateEnd');
         const type = url.searchParams.get('type');
         const duration = url.searchParams.get('duration');
+        const location = url.searchParams.get('location');
         
         if (!db) {
           error('Database not initialized');
@@ -1038,7 +1076,7 @@ function createServer() {
           return;
         }
         
-        queryGameRecords(dateStart, dateEnd, type, duration)
+        queryGameRecords(dateStart, dateEnd, type, duration, location)
           .then((records) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
