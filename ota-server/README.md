@@ -53,6 +53,8 @@ export APPS_DIR=./apps              # 应用目录（默认: ./apps）
 export RESTART_CMD="systemctl restart myservice"  # 全局重启命令（可选）
 ```
 
+日志上传任务相关：`LOG_JOBS_ADMIN_TOKEN`、`LOG_UPLOAD_DIR`、`LOG_UPLOAD_MAX_BYTES`；Nginx 需放大 `client_max_body_size` 与 `proxy_read_timeout`。详见上级目录 [`../LOG_UPLOAD.md`](../LOG_UPLOAD.md)。
+
 ## API 端点
 
 | 端点 | 说明 |

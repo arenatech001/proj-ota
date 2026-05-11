@@ -2,6 +2,8 @@
 Description=OTA Client Daemon
 After=network.target
 
+# 可选日志上传：先加 -log-upload=true，其余见 proj-ota/LOG_UPLOAD.md（-log-base-url -location …）
+
 [Service]
 Type=simple
 User=root

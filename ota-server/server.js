@@ -15,6 +15,9 @@ const LOG_DIR = process.env.LOG_DIR || path.join(__dirname, 'logs');
 const LOG_FILE = process.env.LOG_FILE || path.join(LOG_DIR, 'server.log');
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'game_records.db');
 const RECORDS_PASSWORD = process.env.RECORDS_PASSWORD || 'admin123456';
+const LOG_JOBS_ADMIN_TOKEN = process.env.LOG_JOBS_ADMIN_TOKEN || RECORDS_PASSWORD;
+const LOG_UPLOAD_DIR = process.env.LOG_UPLOAD_DIR || path.join(__dirname, 'log_uploads');
+const LOG_UPLOAD_MAX_BYTES = parseInt(process.env.LOG_UPLOAD_MAX_BYTES || String(500 * 1024 * 1024), 10);
 
 // 确保应用目录存在
 if (!fs.existsSync(APPS_DIR)) {
@@ -24,6 +27,9 @@ if (!fs.existsSync(APPS_DIR)) {
 // 确保日志目录存在
 if (!fs.existsSync(LOG_DIR)) {
   fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+if (!fs.existsSync(LOG_UPLOAD_DIR)) {
+  fs.mkdirSync(LOG_UPLOAD_DIR, { recursive: true });
 }
 
 // 初始化 SQLite 数据库
@@ -59,12 +65,54 @@ function initDatabase() {
             reject(alterErr);
             return;
           }
-          info('Database table initialized');
-          resolve();
+          db.run(`CREATE TABLE IF NOT EXISTS log_upload_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            location TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            date_start TEXT NOT NULL,
+            date_end TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            upload_token TEXT NOT NULL,
+            stored_path TEXT,
+            error_summary TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )`, (ljErr) => {
+            if (ljErr) {
+              error('Failed to create log_upload_jobs: %s', ljErr.message);
+              reject(ljErr);
+              return;
+            }
+            db.run('CREATE INDEX IF NOT EXISTS idx_log_jobs_poll ON log_upload_jobs(location, agent_id, status)', (ixErr) => {
+              if (ixErr) {
+                error('Failed to index log_upload_jobs: %s', ixErr.message);
+                reject(ixErr);
+                return;
+              }
+              info('Database table initialized');
+              resolve();
+            });
+          });
         });
       });
     });
   });
+}
+
+function verifyLogsAdmin(req) {
+  const auth = req.headers.authorization || '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  const headerTok = req.headers['x-logs-admin-token'];
+  const token = bearer || headerTok || '';
+  return token && token === LOG_JOBS_ADMIN_TOKEN;
+}
+
+function verifyJobBearer(req, jobToken) {
+  const auth = req.headers.authorization || '';
+  if (auth.startsWith('Bearer ')) {
+    return auth.slice(7).trim() === jobToken;
+  }
+  return false;
 }
 
 // 插入游戏记录
@@ -146,6 +194,98 @@ function getDistinctTypes() {
       }
       resolve(rows.map(row => row.type));
     });
+  });
+}
+
+// ---------- 日志上传任务（OTA Agent 拉取 / 上传）----------
+function createLogUploadJob(location, agentId, dateStart, dateEnd) {
+  return new Promise((resolve, reject) => {
+    const token = crypto.randomBytes(24).toString('hex');
+    const stmt = db.prepare(`INSERT INTO log_upload_jobs (location, agent_id, date_start, date_end, status, upload_token, updated_at)
+      VALUES (?, ?, ?, ?, 'pending', ?, datetime('now'))`);
+    stmt.run([String(location), String(agentId), String(dateStart), String(dateEnd), token], function(err) {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve({ id: this.lastID, upload_token: token });
+    });
+    stmt.finalize();
+  });
+}
+
+function listLogUploadJobs(filters) {
+  return new Promise((resolve, reject) => {
+    let q = 'SELECT id, location, agent_id, date_start, date_end, status, stored_path, error_summary, created_at, updated_at FROM log_upload_jobs WHERE 1=1';
+    const params = [];
+    if (filters.status) {
+      q += ' AND status = ?';
+      params.push(filters.status);
+    }
+    if (filters.location) {
+      q += ' AND location = ?';
+      params.push(filters.location);
+    }
+    if (filters.agent_id) {
+      q += ' AND agent_id = ?';
+      params.push(filters.agent_id);
+    }
+    q += ' ORDER BY id DESC';
+    db.all(q, params, (err, rows) => (err ? reject(err) : resolve(rows)));
+  });
+}
+
+function getLogJobById(id) {
+  return new Promise((resolve, reject) => {
+    db.get('SELECT * FROM log_upload_jobs WHERE id = ?', [id], (err, row) => (err ? reject(err) : resolve(row)));
+  });
+}
+
+function claimNextLogJob(location, agentId) {
+  return new Promise((resolve, reject) => {
+    db.get(
+      `SELECT id FROM log_upload_jobs WHERE location = ? AND agent_id = ? AND status = 'pending' ORDER BY id ASC LIMIT 1`,
+      [location, agentId],
+      (err, row) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        if (!row) {
+          resolve(null);
+          return;
+        }
+        const jid = row.id;
+        db.run(
+          `UPDATE log_upload_jobs SET status = 'processing', updated_at = datetime('now') WHERE id = ? AND status = 'pending'`,
+          [jid],
+          function(updateErr) {
+            if (updateErr) {
+              reject(updateErr);
+              return;
+            }
+            if (this.changes === 0) {
+              resolve(null);
+              return;
+            }
+            db.get('SELECT * FROM log_upload_jobs WHERE id = ?', [jid], (e2, job) => (e2 ? reject(e2) : resolve(job)));
+          }
+        );
+      }
+    );
+  });
+}
+
+function updateLogJobStatus(id, status, storedPath, errorSummary) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `UPDATE log_upload_jobs SET status = ?, stored_path = COALESCE(?, stored_path), error_summary = ?, updated_at = datetime('now') WHERE id = ?`,
+      [status, storedPath || null, errorSummary != null ? String(errorSummary) : null, id],
+      function(err) {
+        if (err) reject(err);
+        else resolve(this.changes);
+      }
+    );
   });
 }
 
@@ -1097,6 +1237,306 @@ function createServer() {
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
     }
+
+    // ---------- 日志上传任务：Agent 拉取下一任务 ----------
+    if (url.pathname === '/logs/agent/next' && req.method === 'GET') {
+      const loc = req.headers['x-location'] || url.searchParams.get('location');
+      const aid = req.headers['x-agent-id'] || url.searchParams.get('agent_id');
+      if (!loc || !aid) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'location and agent_id required (X-Location, X-Agent-ID)' }));
+        return;
+      }
+      if (!db) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Database not initialized' }));
+        return;
+      }
+      claimNextLogJob(String(loc).trim(), String(aid).trim())
+        .then((job) => {
+          if (!job) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ job: null }));
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            job: {
+              id: job.id,
+              location: job.location,
+              agent_id: job.agent_id,
+              date_start: job.date_start,
+              date_end: job.date_end,
+              upload_token: job.upload_token
+            }
+          }));
+        })
+        .catch((err) => {
+          error('claimNextLogJob: %s', err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        });
+      return;
+    }
+
+    // ---------- 管理员：创建 / 列表 日志任务 ----------
+    if (url.pathname === '/logs/jobs') {
+      if (!db) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Database not initialized' }));
+        return;
+      }
+      if (req.method === 'GET') {
+        if (!verifyLogsAdmin(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+        const status = url.searchParams.get('status');
+        const location = url.searchParams.get('location');
+        const agentId = url.searchParams.get('agent_id');
+        listLogUploadJobs({ status, location, agent_id: agentId })
+          .then((rows) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'ok', jobs: rows }));
+          })
+          .catch((err) => {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message }));
+          });
+        return;
+      }
+      if (req.method === 'POST') {
+        if (!verifyLogsAdmin(req)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+        let body = '';
+        req.on('data', (c) => { body += c.toString(); });
+        req.on('end', () => {
+          try {
+            const p = JSON.parse(body);
+            const location = p.location;
+            const agent_id = p.agent_id;
+            const date_start = p.date_start;
+            const date_end = p.date_end;
+            if (!location || !agent_id || !date_start || !date_end) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'location, agent_id, date_start, date_end required' }));
+              return;
+            }
+            createLogUploadJob(location, agent_id, date_start, date_end)
+              .then((r) => {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ status: 'ok', id: r.id, upload_token: r.upload_token }));
+              })
+              .catch((e) => {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: e.message }));
+              });
+          } catch (e) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid JSON' }));
+          }
+        });
+        return;
+      }
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    const logReportMatch = url.pathname.match(/^\/logs\/jobs\/(\d+)\/report$/);
+    if (logReportMatch && req.method === 'POST') {
+      const jobId = parseInt(logReportMatch[1], 10);
+      let body = '';
+      req.on('data', (c) => { body += c.toString(); });
+      req.on('end', () => {
+        (async () => {
+          try {
+            const p = JSON.parse(body);
+            const job = await getLogJobById(jobId);
+            if (!job) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Job not found' }));
+              return;
+            }
+            if (!verifyJobBearer(req, job.upload_token)) {
+              res.writeHead(403, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Invalid token' }));
+              return;
+            }
+            const loc = req.headers['x-location'] || p.location;
+            const aid = req.headers['x-agent-id'] || p.agent_id;
+            if (job.location !== String(loc) || job.agent_id !== String(aid)) {
+              res.writeHead(403, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'location/agent mismatch' }));
+              return;
+            }
+            if (p.status === 'failed') {
+              await updateLogJobStatus(jobId, 'failed', null, p.error || 'failed');
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ status: 'ok' }));
+              return;
+            }
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'unsupported status' }));
+          } catch (e) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: e.message }));
+          }
+        })();
+      });
+      return;
+    }
+
+    const logUploadMatch = url.pathname.match(/^\/logs\/jobs\/(\d+)\/upload$/);
+    if (logUploadMatch && req.method === 'POST') {
+      const jobId = parseInt(logUploadMatch[1], 10);
+      const token = url.searchParams.get('token') || '';
+      const location = (req.headers['x-location'] || url.searchParams.get('location') || '').trim();
+      const agentId = (req.headers['x-agent-id'] || url.searchParams.get('agent_id') || '').trim();
+      if (!token || !location || !agentId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'token, location, agent_id required' }));
+        return;
+      }
+      getLogJobById(jobId)
+        .then((job) => {
+          if (!job) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Job not found' }));
+            return;
+          }
+          if (job.upload_token !== token) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid token' }));
+            return;
+          }
+          if (job.location !== location || job.agent_id !== agentId) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'location/agent mismatch' }));
+            return;
+          }
+          if (job.status !== 'processing') {
+            res.writeHead(409, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Job not in processing state' }));
+            return;
+          }
+          const cl = parseInt(req.headers['content-length'] || '0', 10);
+          if (cl > LOG_UPLOAD_MAX_BYTES) {
+            res.writeHead(413, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Payload too large' }));
+            return;
+          }
+          const fname = `job-${jobId}-${Date.now()}.upload`;
+          const fpath = path.join(LOG_UPLOAD_DIR, fname);
+          const ws = fs.createWriteStream(fpath);
+          let received = 0;
+          let aborted = false;
+          req.on('data', (chunk) => {
+            if (aborted) return;
+            received += chunk.length;
+            if (received > LOG_UPLOAD_MAX_BYTES) {
+              aborted = true;
+              req.destroy();
+              ws.destroy();
+              fs.unlink(fpath, () => {});
+              if (!res.headersSent) {
+                res.writeHead(413, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Payload too large' }));
+              }
+              return;
+            }
+            ws.write(chunk);
+          });
+          req.on('end', () => {
+            if (aborted) return;
+            ws.end(() => {
+              if (received > LOG_UPLOAD_MAX_BYTES) {
+                if (!res.headersSent) {
+                  res.writeHead(413, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ error: 'Payload too large' }));
+                }
+                return;
+              }
+              updateLogJobStatus(jobId, 'success', fpath, null)
+                .then(() => {
+                  res.writeHead(200, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ status: 'ok', stored_path: fpath }));
+                })
+                .catch((e) => {
+                  res.writeHead(500, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ error: e.message }));
+                });
+            });
+          });
+          req.on('error', () => {
+            if (!aborted) fs.unlink(fpath, () => {});
+          });
+        })
+        .catch((e) => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: e.message }));
+        });
+      return;
+    }
+
+    if (url.pathname === '/logs/jobs.html' && req.method === 'GET') {
+      const html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>日志上传任务</title>
+<style>body{font-family:system-ui;margin:20px;background:#f5f5f5;} .box{max-width:1000px;margin:0 auto;background:#fff;padding:20px;border-radius:8px;}
+label{display:block;margin:8px 0 4px;font-weight:600;} input,select{width:100%;max-width:400px;padding:8px;}
+table{border-collapse:collapse;width:100%;margin-top:16px;} th,td{border:1px solid #ddd;padding:8px;text-align:left;} th{background:#eee;}
+.btn{background:#4c6ef5;color:#fff;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;margin-right:8px;}</style></head><body>
+<div class="box" id="loginBox"><h2>登录</h2><input type="password" id="pwd" placeholder="密码（与游戏记录相同或 LOG_JOBS_ADMIN_TOKEN）">
+<button class="btn" onclick="doLogin()">登录</button><p id="err" style="color:red;"></p></div>
+<div class="box" id="mainBox" style="display:none;">
+<h2>创建日志上传任务</h2>
+<label>地点 location</label><input id="loc" placeholder="与现场 X-Location 一致">
+<label>Agent ID</label><input id="aid" placeholder="与 ota-agent 的 X-Agent-ID 一致">
+<label>开始日期</label><input type="date" id="ds">
+<label>结束日期</label><input type="date" id="de">
+<button class="btn" onclick="createJob()">创建任务</button>
+<h3>任务列表</h3>
+<label>筛选 status</label><select id="st"><option value="">全部</option><option>pending</option><option>processing</option><option>success</option><option>failed</option></select>
+<label>location</label><input id="floc">
+<label>agent_id</label><input id="faid">
+<button class="btn" onclick="loadJobs()">刷新</button>
+<div id="tbl"></div>
+</div>
+<script>
+const tok=()=>sessionStorage.getItem('logs_admin_tok')||'';
+async function doLogin(){
+  const p=document.getElementById('pwd').value;
+  const r=await fetch('/game/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p})});
+  const j=await r.json();
+  if(j.status==='ok'){ sessionStorage.setItem('logs_admin_tok',p); document.getElementById('loginBox').style.display='none'; document.getElementById('mainBox').style.display='block'; loadJobs(); }
+  else document.getElementById('err').textContent='失败';
+}
+async function createJob(){
+  const body={location:document.getElementById('loc').value,agent_id:document.getElementById('aid').value,
+    date_start:document.getElementById('ds').value,date_end:document.getElementById('de').value};
+  const r=await fetch('/logs/jobs',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok()},body:JSON.stringify(body)});
+  const j=await r.json(); alert(j.error||('创建成功 id='+j.id)); loadJobs();
+}
+async function loadJobs(){
+  const q=new URLSearchParams();
+  const st=document.getElementById('st').value; if(st)q.set('status',st);
+  const fl=document.getElementById('floc').value; if(fl)q.set('location',fl);
+  const fa=document.getElementById('faid').value; if(fa)q.set('agent_id',fa);
+  const r=await fetch('/logs/jobs?'+q.toString(),{headers:{'Authorization':'Bearer '+tok()}});
+  const j=await r.json();
+  let h='<table><tr><th>ID</th><th>地点</th><th>agent_id</th><th>区间</th><th>状态</th><th>错误</th><th>存储</th></tr>';
+  (j.jobs||[]).forEach(o=>{ h+='<tr><td>'+o.id+'</td><td>'+o.location+'</td><td>'+o.agent_id+'</td><td>'+o.date_start+'~'+o.date_end+'</td><td>'+o.status+'</td><td>'+(o.error_summary||'')+'</td><td>'+(o.stored_path||'')+'</td></tr>'; });
+  h+='</table>'; document.getElementById('tbl').innerHTML=h;
+}
+if(sessionStorage.getItem('logs_admin_tok')){ document.getElementById('loginBox').style.display='none'; document.getElementById('mainBox').style.display='block'; loadJobs(); }
+</script></body></html>`;
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+      return;
+    }
     
     // 多应用配置文件端点: /ota/<app_name>/version.yaml
     const otaMatch = url.pathname.match(/^\/ota\/([^\/]+)\/version\.yaml$/);
@@ -1328,6 +1768,11 @@ function start() {
         info('  GET/POST /game/record              - Game record endpoint');
         info('  GET /game/records                  - Query game records API');
         info('  GET /game/records.html             - Game records query page');
+        info('  GET /logs/jobs.html                - Log upload jobs admin page');
+        info('  GET/POST /logs/jobs                - List / create log jobs (admin Bearer token)');
+        info('  GET /logs/agent/next               - Agent poll next job (X-Location, X-Agent-ID)');
+        info('  POST /logs/jobs/:id/upload         - Agent raw body upload');
+        info('  POST /logs/jobs/:id/report         - Agent report failure (Bearer job token)');
         info('');
       });
       

@@ -46,6 +46,13 @@ type Logger struct {
 	error *log.Logger
 }
 
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
 func newLogger() *Logger {
 	return &Logger{
 		info:  log.New(os.Stdout, "[INFO] ", log.LstdFlags),
@@ -670,6 +677,15 @@ func checkUpdate(cfgURL string, versionFile string, agentID string, httpTimeout 
 		}
 	}
 
+	// One-shot hook after all files succeeded (not supervised like -start-cmd).
+	if updated && lastErr == nil && strings.TrimSpace(remoteCfg.RestartCmd) != "" {
+		logger.Info("executing restart_cmd: %s", remoteCfg.RestartCmd)
+		if err := runCommand(remoteCfg.RestartCmd); err != nil {
+			logger.Error("restart_cmd failed: %v", err)
+			lastErr = err
+		}
+	}
+
 	// Update main version file
 	if updated {
 		if err := writeLocalVersion(versionFile, remoteCfg.Version); err != nil {
@@ -704,7 +720,23 @@ func main() {
 	maxRetries := flag.Int("max-retries", 3, "maximum number of retries for HTTP requests")
 	checkInterval := flag.Duration("check-interval", 5*time.Minute, "check interval for daemon mode")
 	daemon := flag.Bool("daemon", true, "run as daemon (default: true)")
+	logUpload := flag.Bool("log-upload", false, "enable remote log extraction/upload job loop (default: off)")
+	logBaseURL := flag.String("log-base-url", os.Getenv("OTA_LOG_BASE_URL"), "OTA server base URL for log upload jobs (empty disables)")
+	logLocation := flag.String("log-location", os.Getenv("OTA_LOG_LOCATION"), "site location (X-Location); use -location to override")
+	locationOverride := flag.String("location", os.Getenv("OTA_LOCATION"), "site location (X-Location); if set, overrides -log-location")
+	logScanDir := flag.String("log-scan-dir", envOrDefault("OTA_LOG_SCAN_DIR", "/var/log"), "single directory for client archives and (optional) server logs")
+	logGlob := flag.String("log-glob", envOrDefault("OTA_LOG_GLOB", "*.tar.gz"), "client packaged logs: glob under log-scan-dir (mtime newest in range)")
+	logServerGlob := flag.String("log-server-glob", envOrDefault("OTA_LOG_SERVER_GLOB", ""), "optional: server logs glob under same log-scan-dir; empty = do not collect server *.log etc.")
+	logPollInterval := flag.Duration("log-poll-interval", 1*time.Minute, "poll interval for log jobs")
+	logUploadTimeout := flag.Duration("log-upload-timeout", 30*time.Minute, "HTTP timeout for uploading one log file")
+	logMaxUploadBytes := flag.Int64("log-max-upload-bytes", 500*1024*1024, "max bytes per upload")
+	logReportRetries := flag.Int("log-report-retries", 3, "retries when reporting job failure")
 	flag.Parse()
+
+	resolvedLocation := strings.TrimSpace(*logLocation)
+	if strings.TrimSpace(*locationOverride) != "" {
+		resolvedLocation = strings.TrimSpace(*locationOverride)
+	}
 
 	logger := newLogger()
 
@@ -722,6 +754,12 @@ func main() {
 	logger.Info("HTTP timeout (download): %v", *downloadTimeout)
 	logger.Info("version file: %s", *versionFile)
 	logger.Info("daemon mode: %t", *daemon)
+	logger.Info("log upload: %t", *logUpload)
+	if *logUpload && *logBaseURL != "" {
+		logger.Info("log-base-url: %s", *logBaseURL)
+		logger.Info("location (X-Location): %s", resolvedLocation)
+		logger.Info("log-scan-dir: %s client-glob=%s server-glob=%q", *logScanDir, *logGlob, *logServerGlob)
+	}
 	if *startCmd != "" {
 		logger.Info("start command: %s (for initial process start)", *startCmd)
 	}
@@ -758,18 +796,19 @@ func main() {
 	go runInitialUpdateCheck()
 	logger.Info("starting OTA agent in daemon mode")
 
+	if *logUpload {
+		if *logBaseURL != "" && resolvedLocation != "" && *agentID != "" {
+			go runLogUploadLoop(*logBaseURL, resolvedLocation, *agentID, *logScanDir, *logGlob, strings.TrimSpace(*logServerGlob), *logPollInterval, *httpTimeout, *logUploadTimeout, *logMaxUploadBytes, *logReportRetries, logger)
+		} else if *logBaseURL != "" {
+			logger.Warn("log upload enabled but incomplete: need -location or -log-location, and -agent-id")
+		} else {
+			logger.Warn("log upload enabled but -log-base-url is empty")
+		}
+	}
+
 	// Handle signals for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Process management function
-	// handleProcessManagement := func(result UpdateResult) {
-	// 	if result.Error == nil && result.Updated && result.RestartCmd != "" {
-	// 		if _, err := ensureManagedProcess(result.RestartCmd, "after update (from remote config)", logger); err != nil {
-	// 			logger.Error("failed to ensure managed process: %v", err)
-	// 		}
-	// 	}
-	// }
 
 	// Periodic check
 	ticker := time.NewTicker(*checkInterval)
