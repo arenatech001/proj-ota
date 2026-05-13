@@ -13,7 +13,10 @@ import (
 
 // ProcessManager manages a process with monitoring and auto-restart
 type ProcessManager struct {
-	cmdline      string
+	exe          string
+	args         []string
+	workDir      string
+	cmdline      string // legacy: when exe is empty, split Fields(cmdline)
 	cmd          *exec.Cmd
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -27,7 +30,7 @@ type ProcessManager struct {
 	stopped      bool
 }
 
-// NewProcessManager creates a new process manager
+// NewProcessManager creates a new process manager (legacy: shell-like single string split by Fields)
 func NewProcessManager(cmdline string, logger *Logger) *ProcessManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ProcessManager{
@@ -39,6 +42,31 @@ func NewProcessManager(cmdline string, logger *Logger) *ProcessManager {
 		restartDelay: 3 * time.Second,
 		stopChan:     make(chan struct{}),
 	}
+}
+
+// NewProcessManagerFromSpec uses argv without invoking the shell.
+func NewProcessManagerFromSpec(exe string, args []string, workDir string, logger *Logger) *ProcessManager {
+	ctx, cancel := context.WithCancel(context.Background())
+	cp := append([]string(nil), args...)
+	return &ProcessManager{
+		exe:          strings.TrimSpace(exe),
+		args:         cp,
+		workDir:      strings.TrimSpace(workDir),
+		cmdline:      "",
+		ctx:          ctx,
+		cancel:       cancel,
+		logger:       logger,
+		maxRestarts:  -1,
+		restartDelay: 3 * time.Second,
+		stopChan:     make(chan struct{}),
+	}
+}
+
+func (pm *ProcessManager) displayCommand() string {
+	if pm.exe != "" {
+		return strings.Join(append([]string{pm.exe}, pm.args...), " ")
+	}
+	return pm.cmdline
 }
 
 // SetMaxRestarts sets the maximum number of restarts (-1 for unlimited)
@@ -127,18 +155,33 @@ func (pm *ProcessManager) GetRestartCount() int {
 
 // startProcess starts a new process instance
 func (pm *ProcessManager) startProcess() error {
-	parts := strings.Fields(pm.cmdline)
-	if len(parts) == 0 {
-		return fmt.Errorf("empty command")
+	var argv0 string
+	var argvRest []string
+	if pm.exe != "" {
+		argv0 = pm.exe
+		argvRest = pm.args
+		if argv0 == "" {
+			return fmt.Errorf("empty executable")
+		}
+	} else {
+		parts := strings.Fields(pm.cmdline)
+		if len(parts) == 0 {
+			return fmt.Errorf("empty command")
+		}
+		argv0 = parts[0]
+		argvRest = parts[1:]
 	}
 
 	pm.mu.Lock()
-	pm.cmd = exec.CommandContext(pm.ctx, parts[0], parts[1:]...)
+	pm.cmd = exec.CommandContext(pm.ctx, argv0, argvRest...)
+	if pm.workDir != "" {
+		pm.cmd.Dir = pm.workDir
+	}
 	pm.cmd.Stdout = os.Stdout
 	pm.cmd.Stderr = os.Stderr
 	pm.mu.Unlock()
 
-	pm.logger.Info("starting process: %s", pm.cmdline)
+	pm.logger.Info("starting process: %s", pm.displayCommand())
 	if err := pm.cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start process: %w", err)
 	}
@@ -296,4 +339,3 @@ func stopManagedProcess() error {
 	}
 	return nil
 }
-

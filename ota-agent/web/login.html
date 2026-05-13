@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>OTA Agent 登录</title>
+  <link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body class="center">
+  <div class="card">
+    <h1>OTA Agent</h1>
+    <p class="muted">使用 admin.yaml 中的账号登录</p>
+    <form id="f">
+      <label>用户名</label>
+      <input name="username" autocomplete="username" required/>
+      <label>密码</label>
+      <input name="password" type="password" autocomplete="current-password" required/>
+      <button type="submit">登录</button>
+      <p id="err" class="error"></p>
+    </form>
+  </div>
+  <script>
+    document.getElementById('f').onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const err = document.getElementById('err');
+      err.textContent = '';
+      const r = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: fd.get('username'),
+          password: fd.get('password'),
+        }),
+      });
+      if (!r.ok) {
+        err.textContent = '登录失败';
+        return;
+      }
+      location.href = '/app';
+    };
+  </script>
+</body>
+</html>

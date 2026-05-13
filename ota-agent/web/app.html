@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>OTA Agent 管理</title>
+  <link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body style="margin:0;padding:1rem;background:#0f1419;color:#e6edf3;font-family:system-ui,sans-serif;">
+  <header style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+    <strong>OTA Agent</strong>
+    <button type="button" id="logout" style="width:auto;padding:.4rem .8rem;background:#21262d;">退出</button>
+  </header>
+  <div class="tabs">
+    <button type="button" class="tab active" data-tab="proc">进程</button>
+    <button type="button" class="tab" data-tab="net">网络</button>
+  </div>
+  <section id="proc">
+    <div class="toolbar">
+      <button type="button" id="addp" style="width:auto;padding:.4rem .8rem;background:#238636;">新增进程</button>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>可执行文件</th><th>参数</th><th>启用</th><th>状态</th><th></th></tr></thead>
+      <tbody id="plist"></tbody>
+    </table>
+  </section>
+  <section id="net" style="display:none;">
+    <p class="muted">WiFi 由 tools/wifi-watchdog.sh 执行；改 hostname 需 Linux + 权限。</p>
+    <pre class="raw" id="nstatus"></pre>
+    <label>主机名</label>
+    <input id="hostname" style="max-width:320px;"/>
+    <p class="muted" style="margin:.25rem 0 0;font-size:.85rem;">保存后会尽量更新本机与 /boot/firmware/user-data（若存在）；<strong>须重启 Linux</strong> 后主机名方可完全生效。</p>
+    <button type="button" id="savehost" style="width:auto;margin-left:.5rem;">应用主机名</button>
+    <h3 style="margin-top:1.5rem;font-size:1rem;">WiFi</h3>
+    <label>模式</label>
+    <select id="wmode"><option value="sta">STA (客户端)</option><option value="hotspot">热点 (AP)</option></select>
+    <label>SSID（STA 与热点共用）</label>
+    <input id="wssid" style="max-width:320px;"/>
+    <label>无线网卡（可选，如 wlan0）</label>
+    <input id="wiface" placeholder="留空则自动检测" style="max-width:320px;"/>
+    <label>密码（留空则不修改已存密码）</label>
+    <input id="wpsk" type="password" style="max-width:320px;"/>
+    <div style="margin-top:.75rem;">
+      <button type="button" id="savenet">保存网络配置</button>
+      <button type="button" id="runwifi" style="background:#21262d;">执行一次看门狗</button>
+    </div>
+    <pre class="raw" id="wout"></pre>
+  </section>
+  <dialog id="dlg" style="background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:8px;padding:1rem;max-width:90vw;">
+    <h3 id="dlgtitle">进程</h3>
+    <input type="hidden" id="pid"/>
+    <label>ID</label>
+    <input id="iid" required/>
+    <label>可执行路径</label>
+    <input id="iexe" required/>
+    <label>参数（空格分隔）</label>
+    <input id="iargs" placeholder="-c /etc/foo.json"/>
+    <label><input type="checkbox" id="ien"/> 启用</label>
+    <label>工作目录（可选）</label>
+    <input id="iwd"/>
+    <div style="margin-top:1rem;display:flex;gap:.5rem;justify-content:flex-end;">
+      <button type="button" id="pcancel" style="background:#21262d;">取消</button>
+      <button type="button" id="pok" style="background:#238636;">保存</button>
+    </div>
+  </dialog>
+  <script>
+    async function api(path, opt) {
+      const r = await fetch(path, { credentials: 'same-origin', ...opt });
+      if (r.status === 401) { location.href = '/login'; throw new Error('auth'); }
+      return r;
+    }
+    async function loadProcs() {
+      const r = await api('/api/processes');
+      const rows = await r.json();
+      const tb = document.getElementById('plist');
+      tb.innerHTML = '';
+      for (const p of rows) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${escapeHtml(p.id)}</td><td>${escapeHtml(p.executable)}</td><td>${escapeHtml((p.args||[]).join(' '))}</td><td>${p.enabled?'是':'否'}</td><td>${p.running?'运行中':'停止'} (${p.restart_count||0})</td><td><button data-e="${escapeHtml(p.id)}">编辑</button> <button data-d="${escapeHtml(p.id)}">删</button></td>`;
+        tb.appendChild(tr);
+      }
+      tb.querySelectorAll('button[data-e]').forEach(b => b.onclick = () => editProc(b.getAttribute('data-e')));
+      tb.querySelectorAll('button[data-d]').forEach(b => b.onclick = () => delProc(b.getAttribute('data-d')));
+    }
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    async function editProc(id) {
+      const r = await api('/api/processes');
+      const rows = await r.json();
+      const p = rows.find(x => x.id === id);
+      if (!p) return;
+      document.getElementById('dlgtitle').textContent = '编辑进程';
+      document.getElementById('pid').value = p.id;
+      document.getElementById('iid').value = p.id;
+      document.getElementById('iid').disabled = true;
+      document.getElementById('iexe').value = p.executable;
+      document.getElementById('iargs').value = (p.args || []).join(' ');
+      document.getElementById('ien').checked = !!p.enabled;
+      document.getElementById('iwd').value = p.work_dir || '';
+      document.getElementById('dlg').showModal();
+    }
+    async function delProc(id) {
+      if (!confirm('删除 ' + id + '?')) return;
+      const r = await api('/api/processes/' + encodeURIComponent(id), { method: 'DELETE' });
+      if (!r.ok) alert('删除失败');
+      await loadProcs();
+    }
+    document.getElementById('addp').onclick = () => {
+      document.getElementById('dlgtitle').textContent = '新增进程';
+      document.getElementById('pid').value = '';
+      document.getElementById('iid').value = '';
+      document.getElementById('iid').disabled = false;
+      document.getElementById('iexe').value = '';
+      document.getElementById('iargs').value = '';
+      document.getElementById('ien').checked = true;
+      document.getElementById('iwd').value = '';
+      document.getElementById('dlg').showModal();
+    };
+    document.getElementById('pcancel').onclick = () => document.getElementById('dlg').close();
+    document.getElementById('pok').onclick = async () => {
+      const id = document.getElementById('iid').value.trim();
+      const exe = document.getElementById('iexe').value.trim();
+      const argsStr = document.getElementById('iargs').value.trim();
+      const args = argsStr ? argsStr.split(/\s+/) : [];
+      const body = { id, executable: exe, args, enabled: document.getElementById('ien').checked, work_dir: document.getElementById('iwd').value.trim() };
+      const oldId = document.getElementById('pid').value;
+      let r;
+      if (oldId) {
+        r = await api('/api/processes/' + encodeURIComponent(oldId), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      } else {
+        r = await api('/api/processes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      }
+      if (!r.ok) { const j = await r.json().catch(()=>({})); alert(j.error || '保存失败'); return; }
+      document.getElementById('dlg').close();
+      await loadProcs();
+    };
+    document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+      document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      const tab = t.getAttribute('data-tab');
+      document.getElementById('proc').style.display = tab === 'proc' ? 'block' : 'none';
+      document.getElementById('net').style.display = tab === 'net' ? 'block' : 'none';
+      if (tab === 'net') refreshNet();
+    });
+    async function refreshNet() {
+      const r = await api('/api/network/status');
+      const j = await r.json();
+      document.getElementById('nstatus').textContent = JSON.stringify(j, null, 2);
+      const r2 = await api('/api/network');
+      const n = await r2.json();
+      document.getElementById('wmode').value = (n.wifi_mode || 'sta').toLowerCase();
+      document.getElementById('wssid').value = n.wifi_ssid || '';
+      document.getElementById('wiface').value = n.wifi_iface || '';
+      document.getElementById('wpsk').value = '';
+      const h = await api('/api/network/status');
+      const hj = await h.json();
+      document.getElementById('hostname').value = hj.hostname_static || hj.hostname || '';
+    }
+    document.getElementById('savehost').onclick = async () => {
+      const hostname = document.getElementById('hostname').value.trim();
+      const r = await api('/api/network/hostname', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hostname }) });
+      if (!r.ok) { const j = await r.json().catch(()=>({})); alert(j.error || '失败'); return; }
+      const j = await r.json().catch(() => ({}));
+      let msg = j.message || '主机名已提交；须重启 Linux 后完全生效。';
+      if (j.raspberry_user_data_updated && j.raspberry_user_data_path) {
+        msg += ' 已写入 ' + j.raspberry_user_data_path + ' 中的 hostname:。';
+      }
+      if (j.hostnamectl_error) msg += '（hostnamectl: ' + j.hostnamectl_error + '）';
+      alert(msg);
+      await refreshNet();
+    };
+    document.getElementById('savenet').onclick = async () => {
+      const body = { wifi_mode: document.getElementById('wmode').value, wifi_ssid: document.getElementById('wssid').value.trim(), wifi_iface: document.getElementById('wiface').value.trim(), wifi_psk: document.getElementById('wpsk').value };
+      const r = await api('/api/network', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!r.ok) { const j = await r.json().catch(()=>({})); alert(j.error || '失败'); return; }
+      alert('已保存');
+      document.getElementById('wpsk').value = '';
+      await refreshNet();
+    };
+    document.getElementById('runwifi').onclick = async () => {
+      const r = await api('/api/wifi/run-watchdog', { method: 'POST' });
+      const t = await r.text();
+      document.getElementById('wout').textContent = t;
+    };
+    document.getElementById('logout').onclick = async () => {
+      await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+      location.href = '/login';
+    };
+    setInterval(loadProcs, 5000);
+    loadProcs();
+  </script>
+</body>
+</html>

@@ -3,11 +3,13 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
@@ -44,13 +46,6 @@ type Logger struct {
 	info  *log.Logger
 	warn  *log.Logger
 	error *log.Logger
-}
-
-func envOrDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }
 
 func newLogger() *Logger {
@@ -100,18 +95,25 @@ func fetchConfig(url string, agentID string, localVer string, timeout time.Durat
 	var resp *http.Response
 	var err error
 
+	setConfigReqHeaders := func(req *http.Request) {
+		if agentID != "" {
+			req.Header.Set("X-Agent-ID", agentID)
+		}
+		if localVer != "" {
+			req.Header.Set("X-Local-Version", localVer)
+		}
+		if h, _ := os.Hostname(); strings.TrimSpace(h) != "" {
+			req.Header.Set("X-Hostname", strings.TrimSpace(h))
+		}
+	}
+
 	if maxRetries > 1 {
 		resp, err = retryHTTPRequest(maxRetries, 2*time.Second, func() (*http.Response, error) {
 			req, e := http.NewRequest("GET", url, nil)
 			if e != nil {
 				return nil, e
 			}
-			if agentID != "" {
-				req.Header.Set("X-Agent-ID", agentID)
-			}
-			if localVer != "" {
-				req.Header.Set("X-Local-Version", localVer)
-			}
+			setConfigReqHeaders(req)
 			r, e := client.Do(req)
 			if e != nil {
 				return nil, e
@@ -126,12 +128,7 @@ func fetchConfig(url string, agentID string, localVer string, timeout time.Durat
 		if e != nil {
 			return nil, fmt.Errorf("create request: %w", e)
 		}
-		if agentID != "" {
-			req.Header.Set("X-Agent-ID", agentID)
-		}
-		if localVer != "" {
-			req.Header.Set("X-Local-Version", localVer)
-		}
+		setConfigReqHeaders(req)
 		resp, err = client.Do(req)
 	}
 
@@ -677,7 +674,7 @@ func checkUpdate(cfgURL string, versionFile string, agentID string, httpTimeout 
 		}
 	}
 
-	// One-shot hook after all files succeeded (not supervised like -start-cmd).
+	// One-shot hook after all files succeeded (not supervised like local processes list).
 	if updated && lastErr == nil && strings.TrimSpace(remoteCfg.RestartCmd) != "" {
 		logger.Info("executing restart_cmd: %s", remoteCfg.RestartCmd)
 		if err := runCommand(remoteCfg.RestartCmd); err != nil {
@@ -709,74 +706,97 @@ func checkUpdate(cfgURL string, versionFile string, agentID string, httpTimeout 
 }
 
 func main() {
-	defaultVersionFile, _ := getExecutableRelativePath("version")
-	// flags / env
-	cfgURL := flag.String("config-url", "", "URL to version.yaml (required)")
-	versionFile := flag.String("version-file", defaultVersionFile, "local version file path")
-	agentID := flag.String("agent-id", "", "Agent identifier (sent as X-Agent-ID header)")
-	startCmd := flag.String("start-cmd", "", "Local command for managed process (started immediately; OTA does not block startup)")
-	httpTimeout := flag.Duration("timeout", 30*time.Second, "HTTP timeout for fetching version.yaml (small responses)")
-	downloadTimeout := flag.Duration("download-timeout", 30*time.Minute, "HTTP timeout per file download (includes reading body; use 0 for no limit)")
-	maxRetries := flag.Int("max-retries", 3, "maximum number of retries for HTTP requests")
-	checkInterval := flag.Duration("check-interval", 5*time.Minute, "check interval for daemon mode")
-	daemon := flag.Bool("daemon", true, "run as daemon (default: true)")
-	logUpload := flag.Bool("log-upload", false, "enable remote log extraction/upload job loop (default: off)")
-	logBaseURL := flag.String("log-base-url", os.Getenv("OTA_LOG_BASE_URL"), "OTA server base URL for log upload jobs (empty disables)")
-	logLocation := flag.String("log-location", os.Getenv("OTA_LOG_LOCATION"), "site location (X-Location); use -location to override")
-	locationOverride := flag.String("location", os.Getenv("OTA_LOCATION"), "site location (X-Location); if set, overrides -log-location")
-	logScanDir := flag.String("log-scan-dir", envOrDefault("OTA_LOG_SCAN_DIR", "/var/log"), "single directory for client archives and (optional) server logs")
-	logGlob := flag.String("log-glob", envOrDefault("OTA_LOG_GLOB", "*.tar.gz"), "client packaged logs: glob under log-scan-dir (mtime newest in range)")
-	logServerGlob := flag.String("log-server-glob", envOrDefault("OTA_LOG_SERVER_GLOB", ""), "optional: server logs glob under same log-scan-dir; empty = do not collect server *.log etc.")
-	logPollInterval := flag.Duration("log-poll-interval", 1*time.Minute, "poll interval for log jobs")
-	logUploadTimeout := flag.Duration("log-upload-timeout", 30*time.Minute, "HTTP timeout for uploading one log file")
-	logMaxUploadBytes := flag.Int64("log-max-upload-bytes", 500*1024*1024, "max bytes per upload")
-	logReportRetries := flag.Int("log-report-retries", 3, "retries when reporting job failure")
-	flag.Parse()
-
-	resolvedLocation := strings.TrimSpace(*logLocation)
-	if strings.TrimSpace(*locationOverride) != "" {
-		resolvedLocation = strings.TrimSpace(*locationOverride)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "install-systemd":
+			os.Exit(runInstallSystemd(os.Args[2:]))
+		case "uninstall-systemd":
+			os.Exit(runUninstallSystemd(os.Args[2:]))
+		}
 	}
+
+	configPath := flag.String("config", "", "path to agent YAML (default: <exe-dir>/agent.yaml)")
+	flag.Parse()
 
 	logger := newLogger()
 
-	// Ensure version file directory exists
-	if err := os.MkdirAll(filepath.Dir(*versionFile), 0755); err != nil {
+	cfgPath := strings.TrimSpace(*configPath)
+	if cfgPath == "" {
+		p, err := defaultConfigPath()
+		if err != nil {
+			logger.Error("config path: %v", err)
+			os.Exit(1)
+		}
+		cfgPath = p
+	}
+
+	agentCfg, err := loadAgentConfig(cfgPath)
+	if err != nil {
+		logger.Error("load config %s: %v", cfgPath, err)
+		os.Exit(1)
+	}
+	applyAgentDefaults(agentCfg)
+	if err := validateAgentConfig(agentCfg); err != nil {
+		logger.Error("invalid config: %v", err)
+		os.Exit(1)
+	}
+
+	versionFile, err := resolveVersionFilePath(agentCfg)
+	if err != nil {
+		logger.Error("version_file: %v", err)
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(filepath.Dir(versionFile), 0755); err != nil {
 		logger.Error("failed to create version file directory: %v", err)
 		os.Exit(1)
 	}
 
-	logger.Info("starting OTA agent")
-	logger.Info("config URL: %s", *cfgURL)
-	logger.Info("agent ID: %s", *agentID)
-	logger.Info("check interval: %v", *checkInterval)
-	logger.Info("HTTP timeout (config): %v", *httpTimeout)
-	logger.Info("HTTP timeout (download): %v", *downloadTimeout)
-	logger.Info("version file: %s", *versionFile)
-	logger.Info("daemon mode: %t", *daemon)
-	logger.Info("log upload: %t", *logUpload)
-	if *logUpload && *logBaseURL != "" {
-		logger.Info("log-base-url: %s", *logBaseURL)
-		logger.Info("location (X-Location): %s", resolvedLocation)
-		logger.Info("log-scan-dir: %s client-glob=%s server-glob=%q", *logScanDir, *logGlob, *logServerGlob)
-	}
-	if *startCmd != "" {
-		logger.Info("start command: %s (for initial process start)", *startCmd)
+	logger.Info("starting OTA agent (config=%s)", cfgPath)
+	logger.Info("config_url: %s", agentCfg.ConfigURL)
+	logger.Info("agent_id: %s", agentCfg.AgentID)
+	logger.Info("check_interval: %v", agentCfg.CheckInterval)
+	logger.Info("http_timeout: %v", agentCfg.HTTPTimeout)
+	logger.Info("download_timeout: %v", agentCfg.DownloadTimeout)
+	logger.Info("version_file: %s", versionFile)
+	logger.Info("daemon: %t", daemonEffective(agentCfg))
+	logger.Info("log_upload.enabled: %t", logUploadEnabled(agentCfg))
+	if logUploadEnabled(agentCfg) {
+		logger.Info("log_upload.base_url: %s", agentCfg.LogUpload.BaseURL)
+		logger.Info("log_upload.location: %s", agentCfg.LogUpload.Location)
+		logger.Info("log_upload.scan_dir: %s glob=%s server_glob=%q",
+			agentCfg.LogUpload.ScanDir, agentCfg.LogUpload.Glob, agentCfg.LogUpload.ServerGlob)
 	}
 
-	runCmd := *startCmd
-	if *agentID != "" {
-		runCmd = runCmd + " -id=" + *agentID
+	procReg := newProcessRegistry(logger)
+	rt := &adminRuntime{path: cfgPath, registry: procReg, logger: logger}
+	rt.set(agentCfg)
+	if len(agentCfg.Processes) > 0 {
+		if err := procReg.Sync(agentCfg); err != nil {
+			logger.Error("process registry sync: %v", err)
+		}
 	}
-	logger.Info("runCmd: %s", runCmd)
-	if _, err := ensureManagedProcess(runCmd, "initial process start", logger); err != nil {
-		logger.Error("Start OTA agent runCommand failed: %v", err)
+
+	var adminSrv *adminServer
+	if addr := strings.TrimSpace(agentCfg.AdminListen); addr != "" {
+		if strings.TrimSpace(agentCfg.AdminUsername) == "" {
+			logger.Warn("admin_listen set but admin_username empty")
+		} else {
+			webFS, err := fs.Sub(adminWebEmbedded, "web")
+			if err != nil {
+				logger.Error("admin static fs: %v", err)
+			} else {
+				adminSrv = newAdminServer(addr, rt, webFS, logger)
+				if err := adminSrv.Start(); err != nil {
+					logger.Error("admin HTTP: %v", err)
+				}
+			}
+		}
 	}
 
 	// OTA 检查在进程已启动后进行，避免无网络时长时间阻塞启动。
-	// 更新落盘后由下次重启 ota-agent / 业务进程生效（与周期检查行为一致）。
 	runInitialUpdateCheck := func() {
-		result := checkUpdate(*cfgURL, *versionFile, *agentID, *httpTimeout, *downloadTimeout, *maxRetries, logger)
+		result := checkUpdate(agentCfg.ConfigURL, versionFile, agentCfg.AgentID,
+			agentCfg.HTTPTimeout, agentCfg.DownloadTimeout, agentCfg.MaxRetries, logger)
 		if result.Error != nil {
 			logger.Error("initial update check failed: %v", result.Error)
 			return
@@ -786,8 +806,7 @@ func main() {
 		}
 	}
 
-	// Run once or as daemon
-	if !*daemon {
+	if !daemonEffective(agentCfg) {
 		runInitialUpdateCheck()
 		logger.Info("single-run mode, exiting")
 		return
@@ -796,28 +815,30 @@ func main() {
 	go runInitialUpdateCheck()
 	logger.Info("starting OTA agent in daemon mode")
 
-	if *logUpload {
-		if *logBaseURL != "" && resolvedLocation != "" && *agentID != "" {
-			go runLogUploadLoop(*logBaseURL, resolvedLocation, *agentID, *logScanDir, *logGlob, strings.TrimSpace(*logServerGlob), *logPollInterval, *httpTimeout, *logUploadTimeout, *logMaxUploadBytes, *logReportRetries, logger)
-		} else if *logBaseURL != "" {
-			logger.Warn("log upload enabled but incomplete: need -location or -log-location, and -agent-id")
+	if logUploadEnabled(agentCfg) {
+		lu := agentCfg.LogUpload
+		loc := strings.TrimSpace(lu.Location)
+		if lu.BaseURL != "" && loc != "" && strings.TrimSpace(agentCfg.AgentID) != "" {
+			go runLogUploadLoop(lu.BaseURL, loc, agentCfg.AgentID, lu.ScanDir, lu.Glob, strings.TrimSpace(lu.ServerGlob),
+				lu.PollInterval, agentCfg.HTTPTimeout, lu.UploadTimeout, lu.MaxUploadBytes, lu.ReportRetries, logger)
+		} else if lu.BaseURL != "" {
+			logger.Warn("log_upload enabled but incomplete: need log_upload.location and agent_id")
 		} else {
-			logger.Warn("log upload enabled but -log-base-url is empty")
+			logger.Warn("log_upload enabled but log_upload.base_url is empty")
 		}
 	}
 
-	// Handle signals for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Periodic check
-	ticker := time.NewTicker(*checkInterval)
+	ticker := time.NewTicker(agentCfg.CheckInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			result := checkUpdate(*cfgURL, *versionFile, *agentID, *httpTimeout, *downloadTimeout, *maxRetries, logger)
+			result := checkUpdate(agentCfg.ConfigURL, versionFile, agentCfg.AgentID,
+				agentCfg.HTTPTimeout, agentCfg.DownloadTimeout, agentCfg.MaxRetries, logger)
 			if result.Error != nil {
 				logger.Error("update check failed: %v", result.Error)
 			} else {
@@ -830,7 +851,12 @@ func main() {
 
 		case sig := <-sigChan:
 			logger.Info("received signal %v, shutting down...", sig)
-			// Stop managed process gracefully
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			if adminSrv != nil {
+				_ = adminSrv.Shutdown(ctx)
+			}
+			cancel()
+			procReg.StopAll()
 			if err := stopManagedProcess(); err != nil {
 				logger.Error("failed to stop managed process: %v", err)
 			} else {

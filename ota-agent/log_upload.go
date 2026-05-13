@@ -311,7 +311,7 @@ func runLogUploadLoop(
 		logger.Info("log upload loop: base=%s location=%s scan=%s client=%s server=%s",
 			baseURL, location, scanDir, clientGlob, serverGlob)
 	} else {
-		logger.Info("log upload loop: base=%s location=%s scan=%s glob=%s (no -log-server-glob)",
+		logger.Info("log upload loop: base=%s location=%s scan=%s glob=%s (no log_upload.server_glob)",
 			baseURL, location, scanDir, clientGlob)
 	}
 	ticker := time.NewTicker(pollInterval)

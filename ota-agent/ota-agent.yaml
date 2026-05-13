@@ -1,0 +1,33 @@
+config_url: http://192.168.1.100:8080/ota/app1/version.yaml
+version_file: version
+agent_id: device-001
+check_interval: 5m0s
+http_timeout: 30s
+download_timeout: 30m0s
+max_retries: 3
+log_upload:
+    enabled: null
+    base_url: ""
+    location: ""
+    scan_dir: /var/log
+    glob: '*.tar.gz'
+    server_glob: ""
+    poll_interval: 1m0s
+    upload_timeout: 30m0s
+    max_upload_bytes: 524288000
+    report_retries: 3
+admin_username: admin
+admin_password: "123456"
+admin_listen: 0.0.0.0:9001
+processes:
+    - id: "1"
+      executable: /home/arenatech/client/bin/client_arm64.bin
+      args:
+        - -id
+        - "3"
+      enabled: false
+network:
+    wifi_mode: ""
+    wifi_ssid: ""
+    wifi_psk: ""
+    wifi_iface: ""

@@ -32,17 +32,18 @@ Go 语言编写的客户端代理，用于：
 
 **编译和使用：**
 
+所有行为（OTA 轮询、多进程、Web 管理、日志上传等）由**一份本地 YAML** 描述；命令行**仅** `-config` 指向该文件（省略时默认使用与 `ota-agent` 二进制同目录下的 `ota-agent.yaml`）。
+
 ```bash
 # 编译
 cd ota-agent
 go build -o ota-agent main.go
 
-# 使用（守护进程模式）
-./ota-agent \
-  -config-url="http://your-server.com/ota/app1/version.yaml" \
-  -version-file="/var/lib/ota-agent/version" \
-  -check-interval=5m \
-  -daemon=true
+# 准备 ota-agent.yaml（示例路径与字段名见 ota-agent/README.md）
+./ota-agent -config=/path/to/ota-agent.yaml
+
+# 或与二进制同目录放置 ota-agent.yaml 后直接
+./ota-agent
 ```
 
 ### OTA Update Server (`ota-server/`)
@@ -100,8 +101,8 @@ BASE_URL=http://localhost:3000 node server.js
 cd ota-agent
 go build -o ota-agent main.go
 
-# 创建测试目录
-mkdir -p test-env/bin test-env/var/lib/test-service
+# 创建测试目录与 OTA 版本文件目录（version_file 相对路径相对于本目录下的 ota-agent 二进制）
+mkdir -p test-env/bin test-env/var/lib/ota-agent
 
 # 创建初始版本
 echo '#!/bin/bash
@@ -109,7 +110,23 @@ echo "Initial version 0.9.0"
 ' > test-env/bin/test-service
 chmod +x test-env/bin/test-service
 
-echo "0.9.0" > test-env/var/lib/test-service/version
+echo "0.9.0" > test-env/var/lib/ota-agent/version
+
+# 写入守护进程用配置（相对路径相对于 ota-agent 所在目录）
+cat > test-env/ota-agent.yaml <<'EOF'
+config_url: "http://localhost:3000/ota/test-app/version.yaml"
+version_file: "test-env/var/lib/ota-agent/version"
+check_interval: 30s
+daemon: true
+EOF
+
+# 单次运行用配置（仅检查一次更新后退出）
+cat > test-env/ota-agent-once.yaml <<'EOF'
+config_url: "http://localhost:3000/ota/test-app/version.yaml"
+version_file: "test-env/var/lib/ota-agent/version"
+check_interval: 30s
+daemon: false
+EOF
 ```
 
 #### 3. 准备测试二进制文件
@@ -131,18 +148,11 @@ python3 update-version.py test-app 1.0.0 \
 #### 4. 运行更新测试
 
 ```bash
-# 守护进程模式（使用多应用格式）
-./ota-agent \
-  -config-url="http://localhost:3000/ota/test-app/version.yaml" \
-  -version-file="./test-env/var/lib/ota-agent/version" \
-  -check-interval=30s \
-  -daemon=true
+# 守护进程模式（轮询检查更新）
+./ota-agent -config=./test-env/ota-agent.yaml
 
-# 或单次运行模式
-./ota-agent \
-  -config-url="http://localhost:3000/ota/test-app/version.yaml" \
-  -version-file="./test-env/var/lib/ota-agent/version" \
-  -daemon=false
+# 单次运行模式（检查一次后退出）
+./ota-agent -config=./test-env/ota-agent-once.yaml
 ```
 
 #### 5. 验证更新结果
@@ -155,10 +165,8 @@ cat test-env/var/lib/ota-agent/version.test-service
 # 运行更新后的二进制文件
 ./test-env/bin/test-service
 
-# 再次运行（应该跳过更新，因为版本相同）
-./ota-agent -config-url="http://localhost:3000/ota/test-app/version.yaml" \
-  -version-file="./test-env/version" \
-  -daemon=false
+# 再次单次运行（应跳过更新，因版本相同）
+./ota-agent -config=./test-env/ota-agent-once.yaml
 ```
 
 ### 测试验证点

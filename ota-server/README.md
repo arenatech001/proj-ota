@@ -184,13 +184,8 @@ restart_cmd: "systemctl restart myapp"
 OTA agent 客户端使用应用专属的配置 URL：
 
 ```bash
-# myapp 的 OTA agent
-./ota-agent \
-  -config-url="http://server.com/ota/myapp/version.yaml" \
-  -version-file="/var/lib/ota-agent/myapp/version" \
-  -agent-id="server-001" \
-  -check-interval=5m \
-  -daemon=true
+# myapp 的 OTA agent：所有参数在 /etc/ota-agent/myapp.yaml
+./ota-agent -config=/etc/ota-agent/myapp.yaml
 ```
 
 **Agent ID**: 建议为每个 agent 实例设置唯一的标识符（如服务器主机名、设备 ID 等），这样可以在服务器端准确跟踪每个 agent 的状态。如果不提供，服务器将使用 IP 地址作为标识符。
@@ -336,21 +331,11 @@ python3 update-version.py app2 2.0.0 \
 每个应用使用自己的配置 URL：
 
 ```bash
-# app1 的 OTA agent
-./ota-agent \
-  -config-url="http://server.com/ota/app1/version.yaml" \
-  -version-file="/var/lib/ota-agent/app1/version" \
-  -agent-id="server-001" \
-  -check-interval=5m \
-  -daemon=true
+# app1
+./ota-agent -config=/etc/ota-agent/app1.yaml
 
-# app2 的 OTA agent
-./ota-agent \
-  -config-url="http://server.com/ota/app2/version.yaml" \
-  -version-file="/var/lib/ota-agent/app2/version" \
-  -agent-id="server-002" \
-  -check-interval=5m \
-  -daemon=true
+# app2
+./ota-agent -config=/etc/ota-agent/app2.yaml
 ```
 
 #### 3. 查看应用信息
@@ -436,12 +421,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/ota-agent \
-  -config-url="http://server.com/ota/app1/version.yaml" \
-  -version-file="/var/lib/ota-agent/app1/version" \
-  -agent-id="server-001" \
-  -check-interval=5m \
-  -daemon=true
+ExecStart=/usr/local/bin/ota-agent -config=/etc/ota-agent/app1.yaml
 Restart=always
 
 [Install]
