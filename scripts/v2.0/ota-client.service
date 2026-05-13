@@ -2,17 +2,12 @@
 Description=OTA Client Daemon
 After=network.target
 
-# 可选日志上传：先加 -log-upload=true，其余见 proj-ota/LOG_UPLOAD.md（-log-base-url -location …）
+# 可选远程日志：在 YAML 中设置 log_upload.enabled: true 等，见 proj-ota/LOG_UPLOAD.md
 
 [Service]
 Type=simple
 User=root
-ExecStart=/home/arenatech/client/bin/ota-agent \
-  -config-url="http://www.arenatech.cn/ota/client-arm64-v2.0/version.yaml" \
-  -version-file="/home/arenatech/client/bin/version" \
-  -agent-id="1" \
-  -start-cmd="/home/arenatech/client/bin/client-arm64.bin" \
-  -daemon=true
+ExecStart=/home/arenatech/client/bin/ota-agent -config=/home/arenatech/client/bin/ota-agent.yaml
 Restart=always
 RestartSec=10
 

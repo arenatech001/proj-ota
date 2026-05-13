@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 )
 
@@ -88,6 +89,36 @@ func (r *processRegistry) Sync(cfg *AgentConfig) error {
 	return nil
 }
 
+// Restart stops the managed child for id and starts a fresh instance from last known spec (same YAML entry must be enabled and running under registry).
+func (r *processRegistry) Restart(id string) error {
+	if r == nil {
+		return fmt.Errorf("no process registry")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pm, ok := r.byID[id]
+	spec, had := r.lastSpec[id]
+	if !ok || !had || pm == nil {
+		return fmt.Errorf("process %q is not under management (save config with enabled process first)", id)
+	}
+	if !spec.Enabled || strings.TrimSpace(spec.Executable) == "" {
+		return fmt.Errorf("process %q is disabled or has no executable", id)
+	}
+	_ = pm.Stop()
+	delete(r.byID, id)
+	delete(r.lastSpec, id)
+
+	npm := NewProcessManagerFromSpec(spec.Executable, spec.Args, spec.WorkDir, r.logger)
+	if err := npm.Start(); err != nil {
+		return fmt.Errorf("start process %q: %w", id, err)
+	}
+	r.byID[id] = npm
+	cp := spec
+	cp.Args = append([]string(nil), spec.Args...)
+	r.lastSpec[id] = cp
+	return nil
+}
+
 func (r *processRegistry) StopAll() {
 	if r == nil {
 		return
@@ -108,14 +139,14 @@ func (r *processRegistry) Status() map[string]processStatusDTO {
 	out := make(map[string]processStatusDTO)
 	for id, pm := range r.byID {
 		out[id] = processStatusDTO{
-			Running:      pm.IsRunning(),
-			RestartCount: pm.GetRestartCount(),
+			Running: pm.IsRunning(),
+			PID:     pm.GetPID(),
 		}
 	}
 	return out
 }
 
 type processStatusDTO struct {
-	Running      bool `json:"running"`
-	RestartCount int  `json:"restart_count"`
+	Running bool `json:"running"`
+	PID     int  `json:"pid"`
 }

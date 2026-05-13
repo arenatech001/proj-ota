@@ -2,16 +2,12 @@
 Description=OTA Client Daemon
 After=network.target
 
+# 配置见 -config 指向的 YAML（config_url、version_file、agent_id、processes 等）。
+
 [Service]
 Type=simple
 User=root
-ExecStart=/home/arenatech/client/bin/ota-agent \
-  -config-url="http://www.arenatech.cn/ota/client-arm64-v1.5/version.yaml" \
-  -version-file="/home/arenatech/client/bin/version" \
-  -agent-id="Go2-001" \
-  -start-cmd="/home/arenatech/client/bin/client-arm64.bin" \
-  -check-interval=5m \
-  -daemon=true
+ExecStart=/home/arenatech/client/bin/ota-agent -config=/home/arenatech/client/bin/ota-agent.yaml
 Restart=always
 RestartSec=10
 

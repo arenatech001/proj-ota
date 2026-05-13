@@ -1,0 +1,21 @@
+# 本地联调：先在本仓库 ota-server 执行 npm install && npm run dev（默认 http://localhost:3000）
+# 启动：./ota-agent -config=ota-agent.test.yaml
+# 需存在应用 test-app 与对应 version.yaml（见 proj-ota/README.md 端到端测试）
+
+config_url: "http://localhost:3000/ota/test-app/version.yaml"
+version_file: "version"
+agent_id: "test-agent-001"
+check_interval: 30s
+daemon: true
+
+# Web 管理（仅本机）；不需要管理 HTTP 时可整段注释掉 admin_* 与 admin_listen
+admin_listen: "127.0.0.1:9001"
+admin_username: "admin"
+admin_password: "admin"
+
+# 日志上传默认关闭；需要时改为 enabled: true 并填 base_url、location 等，见 ../LOG_UPLOAD.md
+log_upload:
+  enabled: false
+
+# 监护业务进程时在此列出；纯 OTA 测试可留空
+processes: []

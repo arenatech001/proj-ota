@@ -42,9 +42,11 @@ func wifiWatchdogParamsChanged(a, b AdminNetworkConfig) bool {
 	return x != y
 }
 
-// runWiFiWatchdogOnce runs the bundled watchdog once (STA 开放网允许空 PSK；热点需非空密码).
-func runWiFiWatchdogOnce(ctx context.Context, configPath string, cfg *AgentConfig, logger *Logger) (string, error) {
-	_ = configPath
+// runWiFiWatchdogScript runs wifi-watchdog.sh with subcommand "run" or "activate" (activate disconnects first, then connects with cfg).
+func runWiFiWatchdogScript(ctx context.Context, cfg *AgentConfig, sub string, logger *Logger) (string, error) {
+	if sub != "run" && sub != "activate" {
+		return "", fmt.Errorf("invalid wifi watchdog subcommand: %q", sub)
+	}
 	if runtime.GOOS == "windows" {
 		return "", fmt.Errorf("wifi watchdog not supported on windows")
 	}
@@ -57,7 +59,7 @@ func runWiFiWatchdogOnce(ctx context.Context, configPath string, cfg *AgentConfi
 		mode = "sta"
 	}
 	args := []string{
-		"run",
+		sub,
 		"--mode", mode,
 		"--ssid", strings.TrimSpace(cfg.Network.SSID),
 		"--psk", cfg.Network.PSK,
@@ -73,10 +75,22 @@ func runWiFiWatchdogOnce(ctx context.Context, configPath string, cfg *AgentConfi
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 	if err := cmd.Run(); err != nil {
-		logger.Error("wifi watchdog: %v\n%s", err, buf.String())
+		logger.Error("wifi watchdog %s: %v\n%s", sub, err, buf.String())
 		return buf.String(), err
 	}
 	return buf.String(), nil
+}
+
+// runWiFiWatchdogOnce runs the bundled watchdog once (STA 开放网允许空 PSK；热点需非空密码). Skips if already connected.
+func runWiFiWatchdogOnce(ctx context.Context, configPath string, cfg *AgentConfig, logger *Logger) (string, error) {
+	_ = configPath
+	return runWiFiWatchdogScript(ctx, cfg, "run", logger)
+}
+
+// runWiFiActivateOnce disconnects current WiFi then connects using cfg (wifi-watchdog.sh activate).
+func runWiFiActivateOnce(ctx context.Context, configPath string, cfg *AgentConfig, logger *Logger) (string, error) {
+	_ = configPath
+	return runWiFiWatchdogScript(ctx, cfg, "activate", logger)
 }
 
 // syncWiFiWatchdogSystemd rewrites wifi-watchdog systemd unit from current YAML (install-timer + daemon-reload).

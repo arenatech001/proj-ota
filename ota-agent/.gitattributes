@@ -1,0 +1,2 @@
+# Shell scripts must use LF so Linux shebang works (CRLF causes "cannot execute: required file not found")
+*.sh text eol=lf

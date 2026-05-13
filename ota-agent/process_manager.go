@@ -146,11 +146,17 @@ func (pm *ProcessManager) IsRunning() bool {
 	return pm.running && !pm.stopped
 }
 
-// GetRestartCount returns the number of times the process has been restarted
-func (pm *ProcessManager) GetRestartCount() int {
+// GetPID returns the managed child PID while it is alive (0 if none or already reaped).
+func (pm *ProcessManager) GetPID() int {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
-	return pm.restartCount
+	if pm.cmd == nil || pm.cmd.Process == nil {
+		return 0
+	}
+	if pm.cmd.ProcessState != nil {
+		return 0
+	}
+	return pm.cmd.Process.Pid
 }
 
 // startProcess starts a new process instance
@@ -317,12 +323,12 @@ func ensureManagedProcess(startCmd string, reason string, logger *Logger) (bool,
 	}
 
 	logger.Info("ensuring managed process is running (%s): %s", reason, startCmd)
-	pm, err := startManagedProcess(startCmd, logger)
+	_, err := startManagedProcess(startCmd, logger)
 	if err != nil {
 		logger.Error("failed to start managed process: %v", err)
 		return false, fmt.Errorf("failed to start managed process: %w", err)
 	}
-	logger.Info("process manager started (restart count: %d)", pm.GetRestartCount())
+	logger.Info("process manager started")
 	return true, nil
 }
 

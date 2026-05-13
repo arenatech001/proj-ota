@@ -8,6 +8,7 @@
 #
 # 用法：
 #   sudo ./wifi-watchdog.sh run --mode sta|hotspot --ssid SSID [--psk PSK] [--iface IFACE]
+#   sudo ./wifi-watchdog.sh activate --mode sta|hotspot --ssid SSID [--psk PSK] [--iface IFACE]
 #   sudo ./wifi-watchdog.sh install-timer [--install-path PATH] --mode sta|hotspot --ssid SSID [--psk PSK] [--iface IFACE]
 #   sudo ./wifi-watchdog.sh uninstall-timer [--install-path PATH]
 #   sudo ./wifi-watchdog.sh hotspot-on  --ssid SSID [--psk PSK] [--iface IFACE]
@@ -51,6 +52,7 @@ usage() {
   cat <<'EOF'
 用法:
   wifi-watchdog.sh run --mode sta|hotspot --ssid SSID [--psk PSK] [--iface IFACE]
+  wifi-watchdog.sh activate --mode sta|hotspot --ssid SSID [--psk PSK] [--iface IFACE]
   wifi-watchdog.sh install-timer --mode sta|hotspot --ssid SSID [--psk PSK] [--install-path PATH] [--iface IFACE]
   wifi-watchdog.sh uninstall-timer [--install-path PATH]
   wifi-watchdog.sh hotspot-on --ssid SSID [--psk PSK] [--iface IFACE]
@@ -58,6 +60,7 @@ usage() {
 
 说明:
   --psk 允许为空（开放 STA）；热点模式需要非空 --psk（nmcli 热点要求密码）。
+  activate：先断开当前 WiFi，再按参数连接（用于管理页「激活」）；run 在已连接时会跳过。
 EOF
 }
 
@@ -170,6 +173,17 @@ connection_exists() {
   nmcli connection show "$name" &>/dev/null
 }
 
+hotspot_start() {
+  local dev="$1"
+  log "热点模式：尝试启动热点 SSID=$SSID"
+  nmcli radio wifi on || true
+  if nmcli device wifi hotspot ifname "$dev" ssid "$SSID" password "$PSK"; then
+    log "热点已启动"
+    exit 0
+  fi
+  die "热点启动失败"
+}
+
 run_hotspot_watchdog() {
   require_root
   need_cmd nmcli
@@ -183,37 +197,12 @@ run_hotspot_watchdog() {
     log "热点模式：接口已连接（$dev），跳过"
     exit 0
   fi
-  log "热点模式：尝试启动热点 SSID=$SSID"
-  nmcli radio wifi on || true
-  if nmcli device wifi hotspot ifname "$dev" ssid "$SSID" password "$PSK"; then
-    log "热点已启动"
-    exit 0
-  fi
-  die "热点启动失败"
+  hotspot_start "$dev"
 }
 
-run_sta_watchdog() {
-  require_root
-  need_cmd nmcli
-  [[ -n "$SSID" ]] || die "STA 需要 --ssid"
-
-  local dev
-  dev="$(wifi_device)"
-  [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
-
-  if wifi_connected "$dev"; then
-    log "STA 模式：WiFi 已连接（$dev），跳过"
-    exit 0
-  fi
-
-  ensure_radio "$dev"
-
-  if wifi_connected "$dev"; then
-    log "STA 模式：射频恢复后已连接（$dev），跳过"
-    exit 0
-  fi
-
-  log "STA 模式：未连接（$dev），重新扫描并尝试连接 SSID=$SSID"
+sta_try_connect() {
+  local dev="$1"
+  log "STA 模式：重新扫描并尝试连接 SSID=$SSID"
   nmcli radio wifi on || true
   if nmcli device wifi rescan ifname "$dev" 2>/dev/null; then
     :
@@ -245,6 +234,63 @@ run_sta_watchdog() {
   die "连接 $SSID 失败（请检查密码、信号与 SSID 是否存在）"
 }
 
+run_sta_watchdog() {
+  require_root
+  need_cmd nmcli
+  [[ -n "$SSID" ]] || die "STA 需要 --ssid"
+
+  local dev
+  dev="$(wifi_device)"
+  [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
+
+  if wifi_connected "$dev"; then
+    log "STA 模式：WiFi 已连接（$dev），跳过"
+    exit 0
+  fi
+
+  ensure_radio "$dev"
+
+  if wifi_connected "$dev"; then
+    log "STA 模式：射频恢复后已连接（$dev），跳过"
+    exit 0
+  fi
+
+  sta_try_connect "$dev"
+}
+
+run_sta_activate() {
+  require_root
+  need_cmd nmcli
+  [[ -n "$SSID" ]] || die "STA 需要 --ssid"
+
+  local dev
+  dev="$(wifi_device)"
+  [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
+
+  log "STA 激活：断开当前连接（$dev）后按配置重连 SSID=$SSID"
+  nmcli device disconnect "$dev" 2>/dev/null || true
+  sleep 2
+  ensure_radio "$dev"
+  sta_try_connect "$dev"
+}
+
+run_hotspot_activate() {
+  require_root
+  need_cmd nmcli
+  [[ -n "$SSID" ]] || die "热点需要 --ssid"
+  [[ -n "$PSK" ]] || die "热点需要非空 --psk"
+  local dev
+  dev="$(wifi_device)"
+  [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
+  ensure_radio "$dev"
+  log "热点激活：断开当前连接（$dev）后按配置启动热点 SSID=$SSID"
+  nmcli device disconnect "$dev" 2>/dev/null || true
+  nmcli connection down Hotspot 2>/dev/null || true
+  sleep 2
+  ensure_radio "$dev"
+  hotspot_start "$dev"
+}
+
 run_watchdog() {
   local mode
   mode="$(normalize_mode "${NET_MODE:-sta}")"
@@ -262,6 +308,25 @@ run_watchdog_cmd() {
     die "run 需要 --mode sta 或 --mode hotspot"
   fi
   run_watchdog
+}
+
+run_activate() {
+  local mode
+  mode="$(normalize_mode "${NET_MODE:-sta}")"
+  log "激活 WiFi（先断后连），模式: $mode"
+  if [[ "$mode" == "hotspot" ]]; then
+    run_hotspot_activate
+  else
+    run_sta_activate
+  fi
+}
+
+run_activate_cmd() {
+  parse_wifi_flags "$@"
+  if [[ -z "$NET_MODE" ]]; then
+    die "activate 需要 --mode sta 或 --mode hotspot"
+  fi
+  run_activate
 }
 
 hotspot_off() {
@@ -362,12 +427,12 @@ main() {
   local cmd
   if [[ $# -ge 1 ]]; then
     if [[ "$1" == -* ]]; then
-      die "第一个参数须为子命令（run / install-timer / uninstall-timer / hotspot-on / hotspot-off）"
+      die "第一个参数须为子命令（run / activate / install-timer / uninstall-timer / hotspot-on / hotspot-off）"
     fi
     cmd="$1"
     shift
   else
-    die "需要子命令: run / install-timer / uninstall-timer / …（见 --help）"
+    die "需要子命令: run / activate / install-timer / uninstall-timer / …（见 --help）"
   fi
 
   case "$cmd" in
@@ -376,6 +441,9 @@ main() {
       ;;
     run)
       run_watchdog_cmd "$@"
+      ;;
+    activate)
+      run_activate_cmd "$@"
       ;;
     install-timer)
       parse_wifi_flags "$@"
@@ -392,7 +460,7 @@ main() {
       hotspot_off "$@"
       ;;
     *)
-      die "未知命令: $cmd（可用 run / install-timer / uninstall-timer / hotspot-on / hotspot-off / --help）"
+      die "未知命令: $cmd（可用 run / activate / install-timer / uninstall-timer / hotspot-on / hotspot-off / --help）"
       ;;
   esac
 }

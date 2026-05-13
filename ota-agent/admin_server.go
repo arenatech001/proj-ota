@@ -174,6 +174,7 @@ func (s *adminServer) Start() error {
 	mux.HandleFunc("/api/network/status", s.handleAPINetworkStatus)
 	mux.HandleFunc("/api/network/hostname", s.handleAPIHostname)
 	mux.HandleFunc("/api/wifi/run-watchdog", s.handleAPIWiFiRun)
+	mux.HandleFunc("/api/wifi/activate", s.handleAPIWiFiActivate)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.static))))
 
 	s.srv = &http.Server{
@@ -345,15 +346,15 @@ func (s *adminServer) handleAPIProcessesCollection(w http.ResponseWriter, r *htt
 		st := s.runtime.registry.Status()
 		type row struct {
 			ManagedProcessConfig
-			Running      bool `json:"running"`
-			RestartCount int  `json:"restart_count"`
+			Running bool `json:"running"`
+			PID     int  `json:"pid"`
 		}
 		out := make([]row, 0, len(cfg.Processes))
 		for _, p := range cfg.Processes {
 			rw := row{ManagedProcessConfig: p}
 			if s, ok := st[p.ID]; ok {
 				rw.Running = s.Running
-				rw.RestartCount = s.RestartCount
+				rw.PID = s.PID
 			}
 			out = append(out, rw)
 		}
@@ -402,13 +403,27 @@ func (s *adminServer) handleAPIProcessItem(w http.ResponseWriter, r *http.Reques
 		http.NotFound(w, r)
 		return
 	}
+	procID := id
+	restart := false
+	if strings.HasSuffix(id, "/restart") {
+		procID = strings.Trim(strings.TrimSuffix(id, "/restart"), "/")
+		restart = true
+	}
 	if !s.requireAuth(w, r) {
+		return
+	}
+	if restart {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleAPIProcessRestart(w, procID)
 		return
 	}
 	cfg := s.runtime.get()
 	idx := -1
 	for i, p := range cfg.Processes {
-		if p.ID == id {
+		if p.ID == procID {
 			idx = i
 			break
 		}
@@ -424,7 +439,7 @@ func (s *adminServer) handleAPIProcessItem(w http.ResponseWriter, r *http.Reques
 			http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
 			return
 		}
-		p.ID = id
+		p.ID = procID
 		cfg.Processes[idx] = p
 		if err := s.runtime.saveAndSync(cfg); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
@@ -445,6 +460,19 @@ func (s *adminServer) handleAPIProcessItem(w http.ResponseWriter, r *http.Reques
 	default:
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *adminServer) handleAPIProcessRestart(w http.ResponseWriter, procID string) {
+	reg := s.runtime.registry
+	if reg == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "process registry not available")
+		return
+	}
+	if err := reg.Restart(procID); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
 func (s *adminServer) handleAPINetwork(w http.ResponseWriter, r *http.Request) {
@@ -589,6 +617,23 @@ func (s *adminServer) handleAPIWiFiRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := runWiFiWatchdogOnce(context.Background(), s.runtime.path, s.runtime.get(), s.logger)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"output": out})
+}
+
+func (s *adminServer) handleAPIWiFiActivate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.requireAuth(w, r) {
+		return
+	}
+	out, err := runWiFiActivateOnce(context.Background(), s.runtime.path, s.runtime.get(), s.logger)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return

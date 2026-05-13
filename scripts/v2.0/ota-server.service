@@ -5,11 +5,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/home/arenatech/server/bin/ota-agent \
-  -config-url="http://www.arenatech.cn/ota/server-arm64-v2.0/version.yaml" \
-  -version-file="/home/arenatech/server/bin/version" \
-  -start-cmd="/home/arenatech/server/bin/server-arm64.bin" \
-  -daemon=true
+ExecStart=/home/arenatech/server/bin/ota-agent -config=/home/arenatech/server/bin/ota-agent.yaml
 Restart=always
 RestartSec=10
 

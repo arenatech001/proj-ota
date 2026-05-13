@@ -20,12 +20,12 @@
       <button type="button" id="addp" style="width:auto;padding:.4rem .8rem;background:#238636;">新增进程</button>
     </div>
     <table>
-      <thead><tr><th>ID</th><th>可执行文件</th><th>参数</th><th>启用</th><th>状态</th><th></th></tr></thead>
+      <thead><tr><th>ID</th><th>可执行文件</th><th>参数</th><th>启用</th><th>PID</th><th>状态</th><th></th></tr></thead>
       <tbody id="plist"></tbody>
     </table>
   </section>
   <section id="net" style="display:none;">
-    <p class="muted">WiFi 由 tools/wifi-watchdog.sh 执行；改 hostname 需 Linux + 权限。</p>
+    <p class="muted">WiFi 由 tools/wifi-watchdog.sh 执行；「激活 WiFi」先断开当前连接，再按<strong>已保存</strong>配置重连。改 hostname 需 Linux + 权限。</p>
     <pre class="raw" id="nstatus"></pre>
     <label>主机名</label>
     <input id="hostname" style="max-width:320px;"/>
@@ -40,10 +40,11 @@
     <input id="wiface" placeholder="留空则自动检测" style="max-width:320px;"/>
     <label>密码（留空则不修改已存密码）</label>
     <input id="wpsk" type="password" style="max-width:320px;"/>
-    <div style="margin-top:.75rem;">
+    <div class="net-wifi-actions">
       <button type="button" id="savenet">保存网络配置</button>
-      <button type="button" id="runwifi" style="background:#21262d;">执行一次看门狗</button>
+      <button type="button" id="wifiactivate" style="background:#1f6feb;">激活 WiFi</button>
     </div>
+    <p class="muted" style="margin:.35rem 0 0;font-size:.8rem;">请先「保存网络配置」再激活；将断开当前 WiFi 后重连，不会使用未保存的表单内容。</p>
     <pre class="raw" id="wout"></pre>
   </section>
   <dialog id="dlg" style="background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:8px;padding:1rem;max-width:90vw;">
@@ -76,11 +77,23 @@
       tb.innerHTML = '';
       for (const p of rows) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${escapeHtml(p.id)}</td><td>${escapeHtml(p.executable)}</td><td>${escapeHtml((p.args||[]).join(' '))}</td><td>${p.enabled?'是':'否'}</td><td>${p.running?'运行中':'停止'} (${p.restart_count||0})</td><td><button data-e="${escapeHtml(p.id)}">编辑</button> <button data-d="${escapeHtml(p.id)}">删</button></td>`;
+        const pidCell = (p.pid > 0) ? String(p.pid) : '—';
+        const st = p.running
+          ? (p.pid > 0 ? '运行中' : '监护中 · 等待子进程')
+          : (p.enabled ? '停止' : '未启用');
+        const restartBtn = p.enabled ? `<button type="button" data-r="${escapeHtml(p.id)}" style="background:#bb8009;">重启</button>` : '';
+        tr.innerHTML = `<td>${escapeHtml(p.id)}</td><td>${escapeHtml(p.executable)}</td><td>${escapeHtml((p.args||[]).join(' '))}</td><td>${p.enabled?'是':'否'}</td><td>${pidCell}</td><td>${st}</td><td class="proc-actions">${restartBtn}<button type="button" data-e="${escapeHtml(p.id)}">编辑</button><button type="button" data-d="${escapeHtml(p.id)}">删除</button></td>`;
         tb.appendChild(tr);
       }
       tb.querySelectorAll('button[data-e]').forEach(b => b.onclick = () => editProc(b.getAttribute('data-e')));
       tb.querySelectorAll('button[data-d]').forEach(b => b.onclick = () => delProc(b.getAttribute('data-d')));
+      tb.querySelectorAll('button[data-r]').forEach(b => b.onclick = () => restartProc(b.getAttribute('data-r')));
+    }
+    async function restartProc(id) {
+      if (!confirm('重启进程 ' + id + '?')) return;
+      const r = await api('/api/processes/' + encodeURIComponent(id) + '/restart', { method: 'POST' });
+      if (!r.ok) { const j = await r.json().catch(()=>({})); alert(j.error || '重启失败'); return; }
+      await loadProcs();
     }
     function escapeHtml(s) {
       return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -178,11 +191,18 @@
       document.getElementById('wpsk').value = '';
       await refreshNet();
     };
-    document.getElementById('runwifi').onclick = async () => {
-      const r = await api('/api/wifi/run-watchdog', { method: 'POST' });
+    async function runWiFiWithSavedConfig() {
+      const out = document.getElementById('wout');
+      const r = await api('/api/wifi/activate', { method: 'POST' });
       const t = await r.text();
-      document.getElementById('wout').textContent = t;
-    };
+      out.textContent = t;
+      if (!r.ok) {
+        let msg = '激活失败';
+        try { const j = JSON.parse(t); if (j.error) msg = j.error; } catch (_) {}
+        alert(msg);
+      }
+    }
+    document.getElementById('wifiactivate').onclick = () => runWiFiWithSavedConfig();
     document.getElementById('logout').onclick = async () => {
       await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
       location.href = '/login';
