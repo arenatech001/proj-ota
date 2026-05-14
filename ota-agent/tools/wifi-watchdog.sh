@@ -17,8 +17,8 @@
 
 set -euo pipefail
 
-DEFAULT_SSID=""
-DEFAULT_PSK=""
+DEFAULT_SSID="AT001"
+DEFAULT_PSK="Arenatech@0502"
 DEFAULT_INSTALL_PATH="/home/arenatech/client/tools/wifi-watchdog.sh"
 
 NET_MODE=""

@@ -46,6 +46,12 @@
     </div>
     <p class="muted" style="margin:.35rem 0 0;font-size:.8rem;">请先「保存网络配置」再激活；将断开当前 WiFi 后重连，不会使用未保存的表单内容。</p>
     <pre class="raw" id="wout"></pre>
+    <h3 style="margin-top:1.5rem;font-size:1rem;">有线 eth0</h3>
+    <p class="muted">通过 <code>tools/init-eth0.sh</code> 创建 NM 连接 <code>eth0-static</code>（192.168.123.100/24，网关 192.168.123.1，DNS 8.8.8.8/8.8.4.4），并设置 <code>ipv4.never-default=yes</code>，避免该接口成为系统默认路由。若已存在同名连接会先删除再重建。需 root。</p>
+    <div class="net-wifi-actions">
+      <button type="button" id="initeth0" style="background:#8957e5;">初始化 eth0</button>
+    </div>
+    <pre class="raw" id="eth0out"></pre>
   </section>
   <dialog id="dlg" style="background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:8px;padding:1rem;max-width:90vw;">
     <h3 id="dlgtitle">进程</h3>
@@ -203,6 +209,18 @@
       }
     }
     document.getElementById('wifiactivate').onclick = () => runWiFiWithSavedConfig();
+    document.getElementById('initeth0').onclick = async () => {
+      if (!confirm('将删除已有连接 eth0-static（若存在）并重建为 192.168.123.100/24；是否继续？')) return;
+      const out = document.getElementById('eth0out');
+      const r = await api('/api/network/init-eth0', { method: 'POST' });
+      const t = await r.text();
+      out.textContent = t;
+      if (!r.ok) {
+        let msg = '初始化失败';
+        try { const j = JSON.parse(t); if (j.error) msg = j.error; } catch (_) {}
+        alert(msg);
+      }
+    };
     document.getElementById('logout').onclick = async () => {
       await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
       location.href = '/login';

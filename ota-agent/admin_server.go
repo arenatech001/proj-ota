@@ -175,6 +175,7 @@ func (s *adminServer) Start() error {
 	mux.HandleFunc("/api/network/hostname", s.handleAPIHostname)
 	mux.HandleFunc("/api/wifi/run-watchdog", s.handleAPIWiFiRun)
 	mux.HandleFunc("/api/wifi/activate", s.handleAPIWiFiActivate)
+	mux.HandleFunc("/api/network/init-eth0", s.handleAPIInitEth0)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.static))))
 
 	s.srv = &http.Server{
@@ -634,6 +635,27 @@ func (s *adminServer) handleAPIWiFiActivate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	out, err := runWiFiActivateOnce(context.Background(), s.runtime.path, s.runtime.get(), s.logger)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"output": out})
+}
+
+func (s *adminServer) handleAPIInitEth0(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.requireAuth(w, r) {
+		return
+	}
+	if runtime.GOOS != "linux" {
+		writeJSONError(w, http.StatusBadRequest, "unsupported platform")
+		return
+	}
+	out, err := runInitEth0Script(context.Background(), s.logger)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
