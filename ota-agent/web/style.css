@@ -20,3 +20,80 @@ th { background: #161b22; }
 .net-wifi-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .75rem; }
 .net-wifi-actions > button { width: auto; margin-top: 0; padding: .45rem .85rem; font-size: .875rem; font-weight: 600; }
 pre.raw { background: #0d1117; padding: .75rem; overflow: auto; max-height: 240px; font-size: .75rem; }
+
+/* 编辑/新增进程对话框：约 2 倍常规宽度，便于长路径与参数 */
+dialog.proc-dialog {
+  background: #161b22;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+  width: min(720px, 94vw);
+  max-width: 94vw;
+  box-sizing: border-box;
+}
+dialog.proc-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+dialog.proc-dialog h3 {
+  margin: 0 0 0.75rem;
+  font-size: 1.1rem;
+}
+
+.proc-enable-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.75rem;
+  padding: 0.5rem 0;
+}
+.proc-enable-label {
+  font-size: 0.8rem;
+  color: #8b949e;
+}
+
+/* 启用：开关（底层仍为 checkbox，兼容现有保存逻辑） */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 26px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+.switch-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: #30363d;
+  transition: background 0.2s ease;
+}
+.switch-track::after {
+  content: "";
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  left: 3px;
+  top: 3px;
+  border-radius: 50%;
+  background: #c9d1d9;
+  transition: transform 0.2s ease, background 0.2s ease;
+}
+.switch input:focus-visible + .switch-track {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+.switch input:checked + .switch-track {
+  background: #238636;
+}
+.switch input:checked + .switch-track::after {
+  transform: translateX(22px);
+  background: #fff;
+}
