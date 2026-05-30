@@ -109,24 +109,11 @@ func (a *adminRuntime) saveAndSync(cfg *AgentConfig) error {
 	if err := validateAgentConfig(cfg); err != nil {
 		return err
 	}
-	old := a.get()
+	_ = a.get()
 	if err := saveAgentConfigAtomic(a.path, cfg); err != nil {
 		return err
 	}
 	a.set(cfg)
-	if runtime.GOOS == "linux" && wifiWatchdogParamsChanged(old.Network, cfg.Network) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		if err := syncWiFiWatchdogSystemd(ctx, cfg); err != nil {
-			if a.logger != nil {
-				a.logger.Error("wifi systemd sync: %v", err)
-			}
-			return fmt.Errorf("wifi systemd sync: %w", err)
-		}
-		if a.logger != nil {
-			a.logger.Info("wifi watchdog systemd unit updated (install-timer)")
-		}
-	}
 	if a.registry != nil {
 		if err := a.registry.Sync(cfg); err != nil {
 			return err
@@ -173,8 +160,6 @@ func (s *adminServer) Start() error {
 	mux.HandleFunc("/api/network", s.handleAPINetwork)
 	mux.HandleFunc("/api/network/status", s.handleAPINetworkStatus)
 	mux.HandleFunc("/api/network/hostname", s.handleAPIHostname)
-	mux.HandleFunc("/api/wifi/run-watchdog", s.handleAPIWiFiRun)
-	mux.HandleFunc("/api/wifi/activate", s.handleAPIWiFiActivate)
 	mux.HandleFunc("/api/network/init-eth0", s.handleAPIInitEth0)
 	mux.HandleFunc("/api/system/install-deps-rpi", s.handleAPIInstallDepsRpi)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.static))))
@@ -511,16 +496,45 @@ func (s *adminServer) handleAPINetwork(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg := s.runtime.get()
 		cfg.Network.WiFiMode = mode
-		cfg.Network.SSID = strings.TrimSpace(body.SSID)
 		cfg.Network.Iface = strings.TrimSpace(body.Iface)
-		if body.PSK != "" {
-			cfg.Network.PSK = body.PSK
+		if mode == "hotspot" {
+			fillHotspotNetwork(&cfg.Network)
+		} else {
+			cfg.Network.SSID = strings.TrimSpace(body.SSID)
+			if cfg.Network.SSID == "" {
+				writeJSONError(w, http.StatusBadRequest, "STA 模式需要 wifi_ssid")
+				return
+			}
+			if body.PSK != "" {
+				cfg.Network.PSK = body.PSK
+			}
 		}
 		if err := s.runtime.saveAndSync(cfg); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		resp := map[string]any{
+			"ok":         true,
+			"wifi_mode":  cfg.Network.WiFiMode,
+			"wifi_ssid":  cfg.Network.SSID,
+			"wifi_iface": cfg.Network.Iface,
+		}
+		if runtime.GOOS == "linux" {
+			ctx, cancel := context.WithTimeout(r.Context(), wifiInstallTimeout+30*time.Second)
+			defer cancel()
+			out, wifiErr := applyWiFiOnSave(ctx, s.runtime, s.logger)
+			if out != "" {
+				resp["wifi_output"] = out
+			}
+			if wifiErr != nil {
+				writeJSONError(w, http.StatusInternalServerError, wifiErr.Error())
+				return
+			}
+			cfg = s.runtime.get()
+			resp["wifi_mode"] = cfg.Network.WiFiMode
+			resp["wifi_ssid"] = cfg.Network.SSID
+		}
+		_ = json.NewEncoder(w).Encode(resp)
 	default:
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 	}
@@ -607,40 +621,6 @@ func (s *adminServer) handleAPIHostname(w http.ResponseWriter, r *http.Request) 
 		resp["raspberry_user_data_path"] = raspberryFirmwareUserData
 	}
 	_ = json.NewEncoder(w).Encode(resp)
-}
-
-func (s *adminServer) handleAPIWiFiRun(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
-	if !s.requireAuth(w, r) {
-		return
-	}
-	out, err := runWiFiWatchdogOnce(context.Background(), s.runtime.path, s.runtime.get(), s.logger)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	_ = json.NewEncoder(w).Encode(map[string]string{"output": out})
-}
-
-func (s *adminServer) handleAPIWiFiActivate(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
-	if !s.requireAuth(w, r) {
-		return
-	}
-	out, err := runWiFiActivateOnce(context.Background(), s.runtime.path, s.runtime.get(), s.logger)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	_ = json.NewEncoder(w).Encode(map[string]string{"output": out})
 }
 
 func (s *adminServer) handleAPIInitEth0(w http.ResponseWriter, r *http.Request) {

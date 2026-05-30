@@ -1,34 +1,27 @@
 #!/bin/bash
 #
-# 定时检查 WiFi：STA 未连接则重连；热点模式下恢复热点。
-# 依赖 NetworkManager（nmcli）。建议 root。
-#
-# 参数仅通过命令行传递（含 systemd ExecStart）。STA 与热点复用同一组 --ssid / --psk。
-# 切换模式由 ota-agent 在保存配置后执行 install-timer 重写 .service 并 daemon-reload。
-#
-# 用法：
-#   sudo ./wifi-watchdog.sh run --mode sta|hotspot --ssid SSID [--psk PSK] [--iface IFACE]
-#   sudo ./wifi-watchdog.sh activate --mode sta|hotspot --ssid SSID [--psk PSK] [--iface IFACE]
-#   sudo ./wifi-watchdog.sh install-timer [--install-path PATH] --mode sta|hotspot --ssid SSID [--psk PSK] [--iface IFACE]
-#   sudo ./wifi-watchdog.sh uninstall-timer [--install-path PATH]
-#   sudo ./wifi-watchdog.sh hotspot-on  --ssid SSID [--psk PSK] [--iface IFACE]
-#   sudo ./wifi-watchdog.sh hotspot-off [--iface IFACE]
-#
+# WiFi 看门狗（NetworkManager / nmcli）。建议 root。
+# ota-agent 保存网络配置时调用 install-timer：写 systemd、清除已保存 WiFi 配置、立即尝试连网。
+# 热点：SSID=主机短名，密码 Arenatech0502（脚本内固定）。
+# STA：仅在 run（含 systemd 定时器）中，120s 内连不上目标 SSID 则临时开热点（不改 systemd/agent 配置，重启仍优先 STA）。
 
 set -euo pipefail
 
-DEFAULT_SSID="AT001"
-DEFAULT_PSK="Arenatech@0502"
 DEFAULT_INSTALL_PATH="/home/arenatech/client/tools/wifi-watchdog.sh"
 
 NET_MODE=""
-SSID="$DEFAULT_SSID"
-PSK="$DEFAULT_PSK"
+SSID=""
+PSK=""
 IFACE=""
+SKIP_APPLY=0
 INSTALL_PATH="$DEFAULT_INSTALL_PATH"
 
 readonly UNIT_BASE="wifi-watchdog"
 readonly LOG_TAG="wifi-watchdog"
+readonly HOTSPOT_PSK="Arenatech0502"
+readonly STA_FAIL_TIMEOUT_SEC=120
+readonly TIMER_ON_BOOT_SEC=60
+readonly TIMER_INTERVAL_SEC=300
 
 log() {
   logger -t "$LOG_TAG" -- "$*"
@@ -51,56 +44,35 @@ need_cmd() {
 usage() {
   cat <<'EOF'
 用法:
-  wifi-watchdog.sh run --mode sta|hotspot --ssid SSID [--psk PSK] [--iface IFACE]
-  wifi-watchdog.sh activate --mode sta|hotspot --ssid SSID [--psk PSK] [--iface IFACE]
-  wifi-watchdog.sh install-timer --mode sta|hotspot --ssid SSID [--psk PSK] [--install-path PATH] [--iface IFACE]
+  wifi-watchdog.sh run --mode sta|hotspot [--ssid SSID] [--psk PSK] [--iface IFACE]
+  wifi-watchdog.sh install-timer --mode sta|hotspot [--ssid SSID] [--psk PSK]
+      [--install-path PATH] [--iface IFACE] [--no-apply]
   wifi-watchdog.sh uninstall-timer [--install-path PATH]
-  wifi-watchdog.sh hotspot-on --ssid SSID [--psk PSK] [--iface IFACE]
-  wifi-watchdog.sh hotspot-off [--iface IFACE]
 
 说明:
-  --psk 允许为空（开放 STA）；热点模式需要非空 --psk（nmcli 热点要求密码）。
-  activate：先断开当前 WiFi，再按参数连接（用于管理页「激活」）；run 在已连接时会跳过。
+  STA 须传 --ssid（--psk 可为空表示开放网）。热点无需传 SSID/密码（使用主机名 + Arenatech0502）。
+  install-timer 会先删除本机所有已保存 WiFi 配置，再注册定时器并立即尝试连网（可用 --no-apply 跳过连网）。
+  STA 仅在 run 中：120s 连不上则临时开热点（SSID=主机名，密码 Arenatech0502）；不写入配置，重启仍按 install-timer 中的 STA 重试。
 EOF
-}
-
-escape_systemd_exec_arg() {
-  local s=$1 dollar='$'
-  if [[ "$s" == *"$dollar"* ]]; then
-    s="${s//$dollar/$dollar$dollar}"
-  fi
-  if [[ "$s" =~ [[:space:]\"\\] ]]; then
-    s="${s//\\/\\\\}"
-    s="${s//\"/\\\"}"
-    printf '"%s"' "$s"
-  else
-    printf '%s' "$s"
-  fi
-}
-
-build_watchdog_execstart() {
-  local m
-  m="$(normalize_mode "$NET_MODE")"
-  local out="ExecStart="
-  local sp=""
-  local -a argv=("$INSTALL_PATH" run --mode "$m" --ssid "$SSID" --psk "$PSK")
-  [[ -n "$IFACE" ]] && argv+=(--iface "$IFACE")
-  local a
-  for a in "${argv[@]}"; do
-    out+="${sp}$(escape_systemd_exec_arg "$a")"
-    sp=" "
-  done
-  printf '%s\n' "$out"
 }
 
 normalize_mode() {
   local m
   m="$(echo "${1:-sta}" | tr '[:upper:]' '[:lower:]')"
-  if [[ "$m" == "hotspot" ]]; then
-    echo "hotspot"
-  else
-    echo "sta"
-  fi
+  [[ "$m" == "hotspot" ]] && echo "hotspot" || echo "sta"
+}
+
+hostname_short() {
+  local h
+  h="$(hostname -s 2>/dev/null || true)"
+  [[ -z "$h" ]] && h="$(hostname 2>/dev/null || echo "ota-device")"
+  h="${h%%.*}"
+  printf '%s' "$h"
+}
+
+apply_hotspot_defaults() {
+  SSID="$(hostname_short)"
+  PSK="$HOTSPOT_PSK"
 }
 
 parse_wifi_flags() {
@@ -131,11 +103,56 @@ parse_wifi_flags() {
         NET_MODE="$2"
         shift 2
         ;;
+      --no-apply)
+        SKIP_APPLY=1
+        shift
+        ;;
       *)
         die "未知参数: $1"
         ;;
     esac
   done
+}
+
+resolve_mode_config() {
+  local mode
+  mode="$(normalize_mode "${NET_MODE:-sta}")"
+  NET_MODE="$mode"
+  if [[ "$mode" == "hotspot" ]]; then
+    apply_hotspot_defaults
+  fi
+}
+
+escape_systemd_exec_arg() {
+  local s=$1 dollar='$'
+  if [[ "$s" == *"$dollar"* ]]; then
+    s="${s//$dollar/$dollar$dollar}"
+  fi
+  if [[ "$s" =~ [[:space:]\"\\] ]]; then
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '"%s"' "$s"
+  else
+    printf '%s' "$s"
+  fi
+}
+
+build_watchdog_execstart() {
+  local m out sp
+  m="$(normalize_mode "$NET_MODE")"
+  out="ExecStart="
+  sp=""
+  local -a argv=("$INSTALL_PATH" run --mode "$m")
+  if [[ "$m" == "sta" ]]; then
+    argv+=(--ssid "$SSID" --psk "$PSK")
+  fi
+  [[ -n "$IFACE" ]] && argv+=(--iface "$IFACE")
+  local a
+  for a in "${argv[@]}"; do
+    out+="${sp}$(escape_systemd_exec_arg "$a")"
+    sp=" "
+  done
+  printf '%s\n' "$out"
 }
 
 wifi_device() {
@@ -152,11 +169,10 @@ device_state() {
 }
 
 ensure_radio() {
-  local dev="$1"
-  local st
+  local dev="$1" st
   st="$(device_state "$dev")"
   if [[ "$st" == "unavailable" ]]; then
-    log "接口 $dev 为 unavailable，尝试打开射频与解除 rfkill"
+    log "接口 $dev unavailable，打开射频"
     rfkill unblock wifi 2>/dev/null || true
     nmcli radio wifi on || true
     sleep 2
@@ -164,138 +180,196 @@ ensure_radio() {
 }
 
 wifi_connected() {
-  local dev="$1"
-  [[ "$(device_state "$dev")" == "connected" ]]
+  [[ "$(device_state "$1")" == "connected" ]]
+}
+
+wifi_active_ssid() {
+  local dev="$1" ssid conn
+  ssid="$(nmcli -t -f ACTIVE,SSID dev wifi list ifname "$dev" 2>/dev/null | awk -F: '$1=="yes"{print $2; exit}')"
+  if [[ -n "$ssid" ]]; then
+    printf '%s' "$ssid"
+    return 0
+  fi
+  conn="$(nmcli -g GENERAL.CONNECTION device show "$dev" 2>/dev/null || true)"
+  if [[ -n "$conn" && "$conn" != "--" ]]; then
+    ssid="$(nmcli -g 802-11-wireless.ssid connection show "$conn" 2>/dev/null || true)"
+    [[ -n "$ssid" ]] && printf '%s' "$ssid" && return 0
+  fi
+  return 1
+}
+
+wifi_connected_to_ssid() {
+  local dev="$1" want="$2" cur
+  wifi_connected "$dev" || return 1
+  cur="$(wifi_active_ssid "$dev" 2>/dev/null || true)"
+  [[ -n "$cur" && "$cur" == "$want" ]]
 }
 
 connection_exists() {
+  nmcli connection show "$1" &>/dev/null
+}
+
+connection_delete() {
   local name="$1"
-  nmcli connection show "$name" &>/dev/null
+  [[ -n "$name" ]] || return 0
+  if connection_exists "$name"; then
+    log "删除 NM 连接: $name"
+    nmcli connection delete "$name" 2>/dev/null || true
+  fi
 }
 
-hotspot_start() {
+# install-timer 专用：删除 NetworkManager 中所有已保存的 WiFi（802-11-wireless）连接。
+delete_all_saved_wifi_connections() {
+  local id
+  log "清除本机所有已保存的 WiFi 连接配置"
+  while IFS= read -r id; do
+    [[ -z "$id" ]] && continue
+    log "删除 WiFi 连接: $id"
+    nmcli connection delete "$id" 2>/dev/null || true
+  done < <(
+    nmcli -t -f UUID,TYPE connection show 2>/dev/null | awk -F: '
+      $2 == "802-11-wireless" || $2 == "wifi" { print $1 }
+    '
+  )
+}
+
+hotspot_start_device() {
   local dev="$1"
-  log "热点模式：尝试启动热点 SSID=$SSID"
+  apply_hotspot_defaults
+  log "启动热点 SSID=$SSID"
   nmcli radio wifi on || true
-  if nmcli device wifi hotspot ifname "$dev" ssid "$SSID" password "$PSK"; then
-    log "热点已启动"
-    exit 0
-  fi
-  die "热点启动失败"
+  nmcli device wifi hotspot ifname "$dev" ssid "$SSID" password "$PSK"
 }
 
-run_hotspot_watchdog() {
-  require_root
-  need_cmd nmcli
-  [[ -n "$SSID" ]] || die "热点需要 --ssid"
-  [[ -n "$PSK" ]] || die "热点需要非空 --psk"
-  local dev
-  dev="$(wifi_device)"
-  [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
-  ensure_radio "$dev"
-  if wifi_connected "$dev"; then
-    log "热点模式：接口已连接（$dev），跳过"
-    exit 0
-  fi
-  hotspot_start "$dev"
-}
-
-sta_try_connect() {
+sta_try_connect_once() {
   local dev="$1"
-  log "STA 模式：重新扫描并尝试连接 SSID=$SSID"
+  log "尝试连接 STA SSID=$SSID"
   nmcli radio wifi on || true
-  if nmcli device wifi rescan ifname "$dev" 2>/dev/null; then
-    :
-  else
-    nmcli device wifi rescan 2>/dev/null || true
-  fi
+  nmcli device wifi rescan ifname "$dev" 2>/dev/null || nmcli device wifi rescan 2>/dev/null || true
   sleep 3
-
   if connection_exists "$SSID"; then
-    if nmcli connection up "$SSID" ifname "$dev" 2>/dev/null; then
-      log "已通过已保存的配置连接: $SSID"
-      exit 0
-    fi
-    log "已保存配置 $SSID 激活失败，尝试重新握手连接"
+    nmcli connection up "$SSID" ifname "$dev" 2>/dev/null && return 0
   fi
-
   if [[ -n "$PSK" ]]; then
-    if nmcli device wifi connect "$SSID" password "$PSK" ifname "$dev"; then
-      log "已连接到 $SSID"
-      exit 0
-    fi
+    nmcli device wifi connect "$SSID" password "$PSK" ifname "$dev" && return 0
   else
-    if nmcli device wifi connect "$SSID" ifname "$dev"; then
-      log "已连接到开放网络 $SSID"
-      exit 0
-    fi
+    nmcli device wifi connect "$SSID" ifname "$dev" && return 0
   fi
-
-  die "连接 $SSID 失败（请检查密码、信号与 SSID 是否存在）"
+  return 1
 }
 
-run_sta_watchdog() {
-  require_root
-  need_cmd nmcli
-  [[ -n "$SSID" ]] || die "STA 需要 --ssid"
-
-  local dev
-  dev="$(wifi_device)"
-  [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
-
-  if wifi_connected "$dev"; then
-    log "STA 模式：WiFi 已连接（$dev），跳过"
-    exit 0
-  fi
-
-  ensure_radio "$dev"
-
-  if wifi_connected "$dev"; then
-    log "STA 模式：射频恢复后已连接（$dev），跳过"
-    exit 0
-  fi
-
-  sta_try_connect "$dev"
-}
-
-run_sta_activate() {
-  require_root
-  need_cmd nmcli
-  [[ -n "$SSID" ]] || die "STA 需要 --ssid"
-
-  local dev
-  dev="$(wifi_device)"
-  [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
-
-  log "STA 激活：断开当前连接（$dev）后按配置重连 SSID=$SSID"
-  nmcli device disconnect "$dev" 2>/dev/null || true
-  sleep 2
-  ensure_radio "$dev"
-  sta_try_connect "$dev"
-}
-
-run_hotspot_activate() {
-  require_root
-  need_cmd nmcli
-  [[ -n "$SSID" ]] || die "热点需要 --ssid"
-  [[ -n "$PSK" ]] || die "热点需要非空 --psk"
-  local dev
-  dev="$(wifi_device)"
-  [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
-  ensure_radio "$dev"
-  log "热点激活：断开当前连接（$dev）后按配置启动热点 SSID=$SSID"
+sta_fallback_to_hotspot() {
+  local dev="$1"
+  apply_hotspot_defaults
+  log "STA run：${STA_FAIL_TIMEOUT_SEC}s 内未连上目标 WiFi，开启临时热点 SSID=$SSID 密码=${HOTSPOT_PSK}（不修改 systemd/agent，重启仍优先 STA）"
   nmcli device disconnect "$dev" 2>/dev/null || true
   nmcli connection down Hotspot 2>/dev/null || true
   sleep 2
   ensure_radio "$dev"
-  hotspot_start "$dev"
+  hotspot_start_device "$dev" || die "临时热点启动失败"
+  log "STA run：临时热点已开启 SSID=$SSID"
+  exit 0
+}
+
+# run 专用：在 STA_FAIL_TIMEOUT_SEC 内轮询连接，超时则回退热点（主机名 + Arenatech0502）。
+run_sta_watchdog() {
+  local dev deadline
+  dev="$(wifi_device)"
+  [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
+  [[ -n "$SSID" ]] || die "STA 需要 SSID"
+
+  if wifi_connected_to_ssid "$dev" "$SSID"; then
+    log "STA run：已连接目标 $SSID，跳过"
+    return 0
+  fi
+
+  ensure_radio "$dev"
+  if wifi_connected_to_ssid "$dev" "$SSID"; then
+    log "STA run：已连接目标 $SSID，跳过"
+    return 0
+  fi
+
+  log "STA run：${STA_FAIL_TIMEOUT_SEC}s 内尝试连接 $SSID，失败则回退热点"
+  deadline=$(( $(date +%s) + STA_FAIL_TIMEOUT_SEC ))
+  while (( $(date +%s) < deadline )); do
+    if wifi_connected_to_ssid "$dev" "$SSID"; then
+      log "STA run：已连接 $SSID"
+      return 0
+    fi
+    if sta_try_connect_once "$dev"; then
+      log "STA run：已连接 $SSID"
+      return 0
+    fi
+    sleep 10
+  done
+
+  sta_fallback_to_hotspot "$dev"
+}
+
+run_hotspot_watchdog() {
+  local dev
+  dev="$(wifi_device)"
+  [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
+  apply_hotspot_defaults
+  ensure_radio "$dev"
+  if wifi_connected_to_ssid "$dev" "$SSID"; then
+    log "热点已运行 SSID=$SSID，跳过"
+    return 0
+  fi
+  hotspot_start_device "$dev" || die "热点启动失败"
+  log "热点已启动"
+}
+
+# install-timer 专用：快速连网一次，不回退热点（回退仅由 run 负责）。
+apply_sta_now() {
+  local dev
+  dev="$(wifi_device)"
+  [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
+  [[ -n "$SSID" ]] || die "STA 需要 SSID"
+  log "STA apply：断开 $dev 后尝试连接 $SSID"
+  nmcli device disconnect "$dev" 2>/dev/null || true
+  sleep 2
+  ensure_radio "$dev"
+  if wifi_connected_to_ssid "$dev" "$SSID"; then
+    log "STA apply：已连接 $SSID"
+    return 0
+  fi
+  if sta_try_connect_once "$dev"; then
+    log "STA apply：已连接 $SSID"
+    return 0
+  fi
+  die "STA apply：连接 $SSID 失败（回退热点由定时 run 处理）"
+}
+
+apply_hotspot_now() {
+  local dev
+  dev="$(wifi_device)"
+  [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
+  apply_hotspot_defaults
+  ensure_radio "$dev"
+  log "热点 apply：SSID=$SSID"
+  nmcli device disconnect "$dev" 2>/dev/null || true
+  nmcli connection down Hotspot 2>/dev/null || true
+  sleep 2
+  ensure_radio "$dev"
+  hotspot_start_device "$dev" || die "热点启动失败"
+  log "热点 apply：已启动"
+}
+
+apply_wifi_now() {
+  resolve_mode_config
+  log "install-timer apply：模式=$NET_MODE SSID=${SSID:-—}"
+  if [[ "$NET_MODE" == "hotspot" ]]; then
+    apply_hotspot_now
+  else
+    apply_sta_now
+  fi
 }
 
 run_watchdog() {
-  local mode
-  mode="$(normalize_mode "${NET_MODE:-sta}")"
-  log "当前 WiFi 运行模式: $mode"
-  if [[ "$mode" == "hotspot" ]]; then
+  resolve_mode_config
+  log "WiFi run 模式=$NET_MODE SSID=${SSID:-—}"
+  if [[ "$NET_MODE" == "hotspot" ]]; then
     run_hotspot_watchdog
   else
     run_sta_watchdog
@@ -304,74 +378,33 @@ run_watchdog() {
 
 run_watchdog_cmd() {
   parse_wifi_flags "$@"
-  if [[ -z "$NET_MODE" ]]; then
-    die "run 需要 --mode sta 或 --mode hotspot"
-  fi
+  [[ -n "$NET_MODE" ]] || die "run 需要 --mode"
   run_watchdog
-}
-
-run_activate() {
-  local mode
-  mode="$(normalize_mode "${NET_MODE:-sta}")"
-  log "激活 WiFi（先断后连），模式: $mode"
-  if [[ "$mode" == "hotspot" ]]; then
-    run_hotspot_activate
-  else
-    run_sta_activate
-  fi
-}
-
-run_activate_cmd() {
-  parse_wifi_flags "$@"
-  if [[ -z "$NET_MODE" ]]; then
-    die "activate 需要 --mode sta 或 --mode hotspot"
-  fi
-  run_activate
-}
-
-hotspot_off() {
-  require_root
-  need_cmd nmcli
-  parse_wifi_flags "$@"
-  local dev
-  dev="$(wifi_device)"
-  [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
-  nmcli device disconnect "$dev" 2>/dev/null || true
-  nmcli connection down Hotspot 2>/dev/null || true
-  log "热点已尝试关闭"
-}
-
-hotspot_on_cmd() {
-  parse_wifi_flags "$@"
-  run_hotspot_watchdog
 }
 
 install_timer() {
   require_root
-  need_cmd systemctl
+  need_cmd systemctl nmcli
 
-  if [[ -z "$NET_MODE" ]]; then
-    die "install-timer 需要 --mode sta 或 --mode hotspot"
-  fi
-  if [[ -z "$SSID" ]]; then
-    die "install-timer 需要 --ssid"
-  fi
+  [[ -n "$NET_MODE" ]] || die "install-timer 需要 --mode"
+  resolve_mode_config
+
   local hm
   hm="$(normalize_mode "$NET_MODE")"
-  if [[ "$hm" == "hotspot" && -z "$PSK" ]]; then
-    die "install-timer 热点模式需要非空 --psk"
+  if [[ "$hm" == "sta" ]]; then
+    [[ -n "$SSID" ]] || die "install-timer STA 需要 --ssid"
   fi
+
+  delete_all_saved_wifi_connections
 
   local src
   src="$(readlink -f "$0")"
-  [[ -f "$src" ]] || die "无法解析脚本路径: $0"
+  [[ -f "$src" ]] || die "无法解析脚本路径"
 
   mkdir -p "$(dirname "$INSTALL_PATH")"
-  if [[ -f "$INSTALL_PATH" ]] && [[ "$src" == "$(readlink -f "$INSTALL_PATH")" ]]; then
-    log "脚本已在 $INSTALL_PATH，跳过复制；仅注册 systemd"
-  else
+  if [[ ! -f "$INSTALL_PATH" ]] || [[ "$src" != "$(readlink -f "$INSTALL_PATH" 2>/dev/null || true)" ]]; then
     install -m 750 -o root -g root "$src" "$INSTALL_PATH"
-    log "已复制脚本至: $INSTALL_PATH"
+    log "已安装脚本: $INSTALL_PATH"
   fi
 
   local exec_line
@@ -379,7 +412,7 @@ install_timer() {
 
   cat >"/etc/systemd/system/${UNIT_BASE}.service" <<EOF
 [Unit]
-Description=Ensure WiFi connects to fallback SSID when disconnected
+Description=WiFi watchdog (ota-agent)
 After=network-pre.target NetworkManager.service
 Wants=NetworkManager.service
 
@@ -391,13 +424,13 @@ EOF
 
   cat >"/etc/systemd/system/${UNIT_BASE}.timer" <<EOF
 [Unit]
-Description=Periodic WiFi watchdog ($UNIT_BASE)
+Description=Periodic WiFi watchdog
 
 [Timer]
 Unit=${UNIT_BASE}.service
-OnBootSec=3min
-OnUnitActiveSec=5min
-AccuracySec=1min
+OnBootSec=${TIMER_ON_BOOT_SEC}
+OnUnitActiveSec=${TIMER_INTERVAL_SEC}
+AccuracySec=30
 Persistent=true
 
 [Install]
@@ -406,45 +439,32 @@ EOF
 
   systemctl daemon-reload
   systemctl enable --now "${UNIT_BASE}.timer"
-  log "已启用定时器: ${UNIT_BASE}.timer"
-  systemctl status "${UNIT_BASE}.timer" --no-pager || true
+  log "已启用 ${UNIT_BASE}.timer（模式=$hm SSID=${SSID:-hostname}）"
+
+  if [[ "$SKIP_APPLY" != "1" ]]; then
+    apply_wifi_now
+  fi
 }
 
 uninstall_timer() {
   require_root
   need_cmd systemctl
   systemctl disable --now "${UNIT_BASE}.timer" 2>/dev/null || true
-  rm -f "/etc/systemd/system/${UNIT_BASE}.timer"
-  rm -f "/etc/systemd/system/${UNIT_BASE}.service"
+  rm -f "/etc/systemd/system/${UNIT_BASE}.timer" "/etc/systemd/system/${UNIT_BASE}.service"
   systemctl daemon-reload
-  log "已移除 systemd 单元 ${UNIT_BASE}.timer / ${UNIT_BASE}.service"
-  if [[ -f "$INSTALL_PATH" ]]; then
-    log "安装脚本仍保留: $INSTALL_PATH（需手动删除可 rm）"
-  fi
+  log "已移除 ${UNIT_BASE} systemd 单元"
 }
 
 main() {
   local cmd
-  if [[ $# -ge 1 ]]; then
-    if [[ "$1" == -* ]]; then
-      die "第一个参数须为子命令（run / activate / install-timer / uninstall-timer / hotspot-on / hotspot-off）"
-    fi
-    cmd="$1"
-    shift
-  else
-    die "需要子命令: run / activate / install-timer / uninstall-timer / …（见 --help）"
-  fi
+  [[ $# -ge 1 ]] || die "需要子命令（install-timer / run / uninstall-timer / …）"
+  [[ "$1" != -* ]] || die "第一个参数须为子命令"
+  cmd="$1"
+  shift
 
   case "$cmd" in
-    -h | --help | help)
-      usage
-      ;;
-    run)
-      run_watchdog_cmd "$@"
-      ;;
-    activate)
-      run_activate_cmd "$@"
-      ;;
+    -h | --help | help) usage ;;
+    run) run_watchdog_cmd "$@" ;;
     install-timer)
       parse_wifi_flags "$@"
       install_timer
@@ -453,14 +473,8 @@ main() {
       parse_wifi_flags "$@"
       uninstall_timer
       ;;
-    hotspot-on)
-      hotspot_on_cmd "$@"
-      ;;
-    hotspot-off)
-      hotspot_off "$@"
-      ;;
     *)
-      die "未知命令: $cmd（可用 run / activate / install-timer / uninstall-timer / hotspot-on / hotspot-off / --help）"
+      die "未知命令: $cmd"
       ;;
   esac
 }

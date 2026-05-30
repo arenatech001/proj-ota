@@ -25,7 +25,7 @@
     </table>
   </section>
   <section id="net" style="display:none;">
-    <p class="muted">WiFi 由 tools/wifi-watchdog.sh 执行；「激活 WiFi」先断开当前连接，再按<strong>已保存</strong>配置重连。改 hostname 需 Linux + 权限。</p>
+    <p class="muted">保存 WiFi 将执行 install-timer（写定时器并立即尝试连接）。热点 SSID=主机名、密码 Arenatech0502；STA 定时 run 在 2 分钟连不上时会<strong>临时</strong>开热点，重启后仍优先连已保存的 STA。改 hostname 需 Linux + 权限。</p>
     <pre class="raw" id="nstatus"></pre>
     <label>主机名</label>
     <input id="hostname" style="max-width:320px;"/>
@@ -34,17 +34,19 @@
     <h3 style="margin-top:1.5rem;font-size:1rem;">WiFi</h3>
     <label>模式</label>
     <select id="wmode"><option value="sta">STA (客户端)</option><option value="hotspot">热点 (AP)</option></select>
-    <label>SSID（STA 与热点共用）</label>
-    <input id="wssid" style="max-width:320px;"/>
+    <div id="wsta-fields">
+      <label>SSID</label>
+      <input id="wssid" style="max-width:320px;"/>
+      <label>密码（留空则不修改已存密码）</label>
+      <input id="wpsk" type="password" style="max-width:320px;"/>
+    </div>
+    <p id="whotspot-hint" class="muted" style="display:none;margin:.35rem 0;font-size:.85rem;">热点：SSID=主机名，密码 Arenatech0502（脚本固定）。</p>
     <label>无线网卡（可选，如 wlan0）</label>
     <input id="wiface" placeholder="留空则自动检测" style="max-width:320px;"/>
-    <label>密码（留空则不修改已存密码）</label>
-    <input id="wpsk" type="password" style="max-width:320px;"/>
     <div class="net-wifi-actions">
-      <button type="button" id="savenet">保存网络配置</button>
-      <button type="button" id="wifiactivate" style="background:#1f6feb;">激活 WiFi</button>
+      <button type="button" id="savenet" style="background:#238636;">保存并应用 WiFi</button>
     </div>
-    <p class="muted" style="margin:.35rem 0 0;font-size:.8rem;">请先「保存网络配置」再激活；将断开当前 WiFi 后重连，不会使用未保存的表单内容。</p>
+    <p class="muted" style="margin:.35rem 0 0;font-size:.8rem;">保存后立即尝试连接；STA 持续失败时定时 run 约 2 分钟后临时开热点（重启后仍会先试 STA）。</p>
     <pre class="raw" id="wout"></pre>
     <h3 style="margin-top:1.5rem;font-size:1rem;">有线 eth0</h3>
     <p class="muted">通过 <code>tools/init-eth0.sh</code> 创建 NM 连接 <code>eth0-static</code>（192.168.123.100/24，网关 192.168.123.1，DNS 8.8.8.8/8.8.4.4），并设置 <code>ipv4.never-default=yes</code>，避免该接口成为系统默认路由。若已存在同名连接会先删除再重建。需 root。</p>
@@ -174,6 +176,11 @@
       document.getElementById('net').style.display = tab === 'net' ? 'block' : 'none';
       if (tab === 'net') refreshNet();
     });
+    function syncWiFiFormMode() {
+      const hotspot = document.getElementById('wmode').value === 'hotspot';
+      document.getElementById('wsta-fields').style.display = hotspot ? 'none' : 'block';
+      document.getElementById('whotspot-hint').style.display = hotspot ? 'block' : 'none';
+    }
     async function refreshNet() {
       const r = await api('/api/network/status');
       const j = await r.json();
@@ -184,10 +191,12 @@
       document.getElementById('wssid').value = n.wifi_ssid || '';
       document.getElementById('wiface').value = n.wifi_iface || '';
       document.getElementById('wpsk').value = '';
+      syncWiFiFormMode();
       const h = await api('/api/network/status');
       const hj = await h.json();
       document.getElementById('hostname').value = hj.hostname_static || hj.hostname || '';
     }
+    document.getElementById('wmode').onchange = syncWiFiFormMode;
     document.getElementById('savehost').onclick = async () => {
       const hostname = document.getElementById('hostname').value.trim();
       const r = await api('/api/network/hostname', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hostname }) });
@@ -202,25 +211,26 @@
       await refreshNet();
     };
     document.getElementById('savenet').onclick = async () => {
-      const body = { wifi_mode: document.getElementById('wmode').value, wifi_ssid: document.getElementById('wssid').value.trim(), wifi_iface: document.getElementById('wiface').value.trim(), wifi_psk: document.getElementById('wpsk').value };
+      const out = document.getElementById('wout');
+      out.textContent = '正在应用 WiFi…';
+      const body = {
+        wifi_mode: document.getElementById('wmode').value,
+        wifi_ssid: document.getElementById('wssid').value.trim(),
+        wifi_iface: document.getElementById('wiface').value.trim(),
+        wifi_psk: document.getElementById('wpsk').value
+      };
       const r = await api('/api/network', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      if (!r.ok) { const j = await r.json().catch(()=>({})); alert(j.error || '失败'); return; }
-      alert('已保存');
+      const t = await r.text();
+      let j = {};
+      try { j = JSON.parse(t); } catch (_) {}
+      if (j.wifi_output) out.textContent = j.wifi_output;
+      else out.textContent = t;
+      if (!r.ok) { alert(j.error || '保存失败'); return; }
+      let msg = '已保存并应用';
+      alert(msg);
       document.getElementById('wpsk').value = '';
       await refreshNet();
     };
-    async function runWiFiWithSavedConfig() {
-      const out = document.getElementById('wout');
-      const r = await api('/api/wifi/activate', { method: 'POST' });
-      const t = await r.text();
-      out.textContent = t;
-      if (!r.ok) {
-        let msg = '激活失败';
-        try { const j = JSON.parse(t); if (j.error) msg = j.error; } catch (_) {}
-        alert(msg);
-      }
-    }
-    document.getElementById('wifiactivate').onclick = () => runWiFiWithSavedConfig();
     document.getElementById('initeth0').onclick = async () => {
       if (!confirm('将删除已有连接 eth0-static（若存在）并重建为 192.168.123.100/24；是否继续？')) return;
       const out = document.getElementById('eth0out');
