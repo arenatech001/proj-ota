@@ -162,6 +162,7 @@ func (s *adminServer) Start() error {
 	mux.HandleFunc("/api/network/hostname", s.handleAPIHostname)
 	mux.HandleFunc("/api/network/init-eth0", s.handleAPIInitEth0)
 	mux.HandleFunc("/api/system/install-deps-rpi", s.handleAPIInstallDepsRpi)
+	mux.HandleFunc("/api/logs/download", s.handleAPILogsDownload)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.static))))
 
 	s.srv = &http.Server{

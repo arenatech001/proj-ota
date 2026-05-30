@@ -27,6 +27,8 @@ test_update/
 ota-agent/ota-agent
 ota-agent/version
 
+release/agent/
+
 # Logs
 *.log
 npm-debug.log*

@@ -206,11 +206,13 @@ func runUninstallSystemd(args []string) int {
 
 func printSystemdSubcommandUsage() {
 	fmt.Fprintf(os.Stderr, `Usage:
+  %s init [-config=PATH] [-unit=NAME] [-description=TEXT] [-user=USER]
   %s install-systemd [-config=PATH] [-unit=NAME] [-description=TEXT] [-user=USER]
   %s uninstall-systemd [-unit=NAME]
 
+init: install-systemd + install-deps-rpi.sh + init-eth0.sh + WiFi hotspot (wifi-watchdog install).
 install-systemd writes /etc/systemd/system/<unit>.service, runs systemctl daemon-reload, and enable --now.
 Requires Linux (systemd) and root. Subcommand must be the first argument (not after agent -config).
 
-`, filepath.Base(os.Args[0]), filepath.Base(os.Args[0]))
+`, filepath.Base(os.Args[0]), filepath.Base(os.Args[0]), filepath.Base(os.Args[0]))
 }

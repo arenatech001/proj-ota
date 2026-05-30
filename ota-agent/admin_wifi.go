@@ -36,19 +36,26 @@ func shortHostname(h string) string {
 	return h
 }
 
-// fillHotspotNetwork sets SSID from hostname for YAML persistence (PSK lives in script).
+// fillHotspotNetwork fills missing hotspot SSID/PSK (SSID from hostname if empty).
 func fillHotspotNetwork(n *AdminNetworkConfig) {
-	h, err := os.Hostname()
-	if err != nil || strings.TrimSpace(h) == "" {
-		h = "ota-device"
+	if n == nil {
+		return
 	}
-	n.SSID = shortHostname(h)
-	n.PSK = ""
+	if strings.TrimSpace(n.SSID) == "" {
+		h, err := os.Hostname()
+		if err != nil || strings.TrimSpace(h) == "" {
+			h = "ota-device"
+		}
+		n.SSID = shortHostname(h)
+	}
+	if strings.TrimSpace(n.PSK) == "" {
+		n.PSK = "AtAdmin0502"
+	}
 }
 
-// runWiFiInstallTimer installs systemd timer (clears saved WiFi profiles in script) and optionally applies WiFi now.
-// STA 临时回退热点仅在定时 run 中发生，不修改 agent.yaml / systemd（重启后仍优先 STA）。
-func runWiFiInstallTimer(ctx context.Context, cfg *AgentConfig, skipApply bool, logger *Logger) (out string, err error) {
+// runWiFiInstall registers systemd timer (reads agent.yaml on each run) and optionally applies WiFi now.
+// STA 临时回退热点仅在定时 run 中发生，不修改 agent.yaml（重启后仍优先 STA）。
+func runWiFiInstall(ctx context.Context, cfgPath string, skipApply bool, logger *Logger) (out string, err error) {
 	if runtime.GOOS != "linux" {
 		return "", nil
 	}
@@ -56,22 +63,19 @@ func runWiFiInstallTimer(ctx context.Context, cfg *AgentConfig, skipApply bool, 
 	if err != nil {
 		return "", err
 	}
-
-	mode := strings.ToLower(strings.TrimSpace(cfg.Network.WiFiMode))
-	if mode == "" {
-		mode = "sta"
+	cfgPath = strings.TrimSpace(cfgPath)
+	if cfgPath == "" {
+		return "", fmt.Errorf("config path is empty")
+	}
+	cfgPath, err = filepath.Abs(cfgPath)
+	if err != nil {
+		return "", err
 	}
 
 	args := []string{
-		"install-timer",
+		"install",
+		"--config", cfgPath,
 		"--install-path", script,
-		"--mode", mode,
-	}
-	if mode == "sta" {
-		args = append(args, "--ssid", strings.TrimSpace(cfg.Network.SSID), "--psk", cfg.Network.PSK)
-	}
-	if iface := strings.TrimSpace(cfg.Network.Iface); iface != "" {
-		args = append(args, "--iface", iface)
 	}
 	if skipApply {
 		args = append(args, "--no-apply")
@@ -85,14 +89,37 @@ func runWiFiInstallTimer(ctx context.Context, cfg *AgentConfig, skipApply bool, 
 	out = string(combined)
 	if runErr != nil {
 		if logger != nil {
-			logger.Error("wifi install-timer: %v\n%s", runErr, out)
+			logger.Error("wifi install: %v\n%s", runErr, out)
 		}
 		return out, fmt.Errorf("%w: %s", runErr, strings.TrimSpace(out))
 	}
 	return out, nil
 }
 
-// applyWiFiOnSave runs install-timer; does not persist timer-run hotspot fallback (reboot keeps STA priority).
+// ensureWiFiWatchdogInstalled idempotently registers wifi-watchdog timer (no immediate apply).
+func ensureWiFiWatchdogInstalled(ctx context.Context, cfgPath string, logger *Logger) {
+	if runtime.GOOS != "linux" {
+		return
+	}
+	if os.Geteuid() != 0 {
+		if logger != nil {
+			logger.Info("wifi-watchdog: skip auto-install (not root)")
+		}
+		return
+	}
+	out, err := runWiFiInstall(ctx, cfgPath, true, logger)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("wifi-watchdog auto-install: %v", err)
+		}
+		return
+	}
+	if logger != nil && strings.TrimSpace(out) != "" {
+		logger.Info("wifi-watchdog: %s", strings.TrimSpace(out))
+	}
+}
+
+// applyWiFiOnSave runs install and applies WiFi immediately from agent.yaml.
 func applyWiFiOnSave(ctx context.Context, rt *adminRuntime, logger *Logger) (out string, err error) {
-	return runWiFiInstallTimer(ctx, rt.get(), false, logger)
+	return runWiFiInstall(ctx, rt.path, false, logger)
 }

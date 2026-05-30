@@ -14,6 +14,7 @@
   <div class="tabs">
     <button type="button" class="tab active" data-tab="proc">进程</button>
     <button type="button" class="tab" data-tab="net">网络</button>
+    <button type="button" class="tab" data-tab="logs">日志</button>
   </div>
   <section id="proc">
     <div class="toolbar">
@@ -25,7 +26,7 @@
     </table>
   </section>
   <section id="net" style="display:none;">
-    <p class="muted">保存 WiFi 将执行 install-timer（写定时器并立即尝试连接）。热点 SSID=主机名、密码 Arenatech0502；STA 定时 run 在 2 分钟连不上时会<strong>临时</strong>开热点，重启后仍优先连已保存的 STA。改 hostname 需 Linux + 权限。</p>
+    <p class="muted">保存 WiFi 写入 agent.yaml 并注册 wifi-watchdog 定时器（立即尝试连接）。热点 SSID=主机名、密码 AtAdmin0502；STA 在 3 分钟连不上时会<strong>临时</strong>开热点，重启后仍按 agent.yaml 优先 STA。改 hostname 需 Linux + 权限。</p>
     <pre class="raw" id="nstatus"></pre>
     <label>主机名</label>
     <input id="hostname" style="max-width:320px;"/>
@@ -40,13 +41,13 @@
       <label>密码（留空则不修改已存密码）</label>
       <input id="wpsk" type="password" style="max-width:320px;"/>
     </div>
-    <p id="whotspot-hint" class="muted" style="display:none;margin:.35rem 0;font-size:.85rem;">热点：SSID=主机名，密码 Arenatech0502（脚本固定）。</p>
+    <p id="whotspot-hint" class="muted" style="display:none;margin:.35rem 0;font-size:.85rem;">热点：未填 SSID 时用主机名；密码默认 AtAdmin0502（镜像构建时常为 AT-xxxxxx + AtAdmin0502）。</p>
     <label>无线网卡（可选，如 wlan0）</label>
     <input id="wiface" placeholder="留空则自动检测" style="max-width:320px;"/>
     <div class="net-wifi-actions">
       <button type="button" id="savenet" style="background:#238636;">保存并应用 WiFi</button>
     </div>
-    <p class="muted" style="margin:.35rem 0 0;font-size:.8rem;">保存后立即尝试连接；STA 持续失败时定时 run 约 2 分钟后临时开热点（重启后仍会先试 STA）。</p>
+    <p class="muted" style="margin:.35rem 0 0;font-size:.8rem;">保存后立即尝试连接；STA 持续失败时定时 run 约 3 分钟后临时开热点（重启后仍会先试 STA）。</p>
     <pre class="raw" id="wout"></pre>
     <h3 style="margin-top:1.5rem;font-size:1rem;">有线 eth0</h3>
     <p class="muted">通过 <code>tools/init-eth0.sh</code> 创建 NM 连接 <code>eth0-static</code>（192.168.123.100/24，网关 192.168.123.1，DNS 8.8.8.8/8.8.4.4），并设置 <code>ipv4.never-default=yes</code>，避免该接口成为系统默认路由。若已存在同名连接会先删除再重建。需 root。</p>
@@ -60,6 +61,22 @@
       <button type="button" id="installdepsrpi" style="background:#238636;">初始化环境</button>
     </div>
     <pre class="raw" id="depsout"></pre>
+  </section>
+  <section id="logs" style="display:none;">
+    <p class="muted">选择日期区间，自动扫描 <code>agent.yaml</code> 中 <code>log_upload</code> 配置的目录与 glob，按文件修改时间匹配 client / server 日志并打包为 ZIP 下载。</p>
+    <div class="log-download-form">
+      <div>
+        <label for="log-start">开始日期</label>
+        <input type="date" id="log-start"/>
+      </div>
+      <div>
+        <label for="log-end">结束日期</label>
+        <input type="date" id="log-end"/>
+      </div>
+      <button type="button" id="log-download" style="background:#238636;">打包下载</button>
+    </div>
+    <p class="muted" style="margin:.35rem 0 0;font-size:.85rem;">ZIP 内结构：<code>client/</code> 下为 client 日志，<code>server/</code> 下为 server 日志（区间内可能有多份）。单次最多 90 天。</p>
+    <p id="log-status" class="muted" style="margin-top:.5rem;"></p>
   </section>
   <dialog id="dlg" class="proc-dialog">
     <h3 id="dlgtitle">进程</h3>
@@ -168,14 +185,67 @@
       document.getElementById('dlg').close();
       await loadProcs();
     };
+    function fmtLocalDate(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return y + '-' + m + '-' + day;
+    }
+    function initLogDates() {
+      const end = new Date();
+      const start = new Date();
+      start.setDate(start.getDate() - 6);
+      document.getElementById('log-end').value = fmtLocalDate(end);
+      document.getElementById('log-start').value = fmtLocalDate(start);
+    }
     document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
       document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
       t.classList.add('active');
       const tab = t.getAttribute('data-tab');
       document.getElementById('proc').style.display = tab === 'proc' ? 'block' : 'none';
       document.getElementById('net').style.display = tab === 'net' ? 'block' : 'none';
+      document.getElementById('logs').style.display = tab === 'logs' ? 'block' : 'none';
       if (tab === 'net') refreshNet();
+      if (tab === 'logs') initLogDates();
     });
+    document.getElementById('log-download').onclick = async () => {
+      const start = document.getElementById('log-start').value;
+      const end = document.getElementById('log-end').value;
+      const status = document.getElementById('log-status');
+      if (!start || !end) { alert('请选择开始与结束日期'); return; }
+      if (start > end) { alert('开始日期不能晚于结束日期'); return; }
+      status.textContent = '正在打包，请稍候…';
+      const btn = document.getElementById('log-download');
+      btn.disabled = true;
+      try {
+        const url = '/api/logs/download?date_start=' + encodeURIComponent(start) + '&date_end=' + encodeURIComponent(end);
+        const r = await api(url);
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          status.textContent = '';
+          alert(j.error || '打包下载失败');
+          return;
+        }
+        const blob = await r.blob();
+        let fn = 'logs_' + start + '_' + end + '.zip';
+        const disp = r.headers.get('Content-Disposition') || '';
+        const m = /filename="([^"]+)"/.exec(disp);
+        if (m) fn = m[1];
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = fn;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+        status.textContent = '下载已开始：' + fn;
+      } catch (e) {
+        status.textContent = '';
+        if (e.message !== 'auth') alert('打包下载失败');
+      } finally {
+        btn.disabled = false;
+      }
+    };
     function syncWiFiFormMode() {
       const hotspot = document.getElementById('wmode').value === 'hotspot';
       document.getElementById('wsta-fields').style.display = hotspot ? 'none' : 'block';

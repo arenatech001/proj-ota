@@ -10,7 +10,7 @@ readonly CON_NAME="eth0-static"
 readonly IFACE="eth0"
 readonly IP4="192.168.123.100/24"
 readonly GW4="192.168.123.1"
-readonly DNS='8.8.8.8 8.8.4.4'
+readonly DNS='8.8.8.8'
 
 log() {
   printf '%s %s\n' "$(date -Is)" "$*" >&2

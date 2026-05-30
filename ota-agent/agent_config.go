@@ -89,7 +89,7 @@ func defaultConfigPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "agent.yaml"), nil
+	return filepath.Join(dir, "../config/agent.yaml"), nil
 }
 
 func loadAgentConfig(path string) (*AgentConfig, error) {
@@ -124,7 +124,7 @@ func applyAgentDefaults(c *AgentConfig) {
 		c.VersionFile = "version"
 	}
 	if strings.TrimSpace(c.LogUpload.ScanDir) == "" {
-		c.LogUpload.ScanDir = "/var/log"
+		c.LogUpload.ScanDir = "/home/arenatech/agent/logs"
 	}
 	if strings.TrimSpace(c.LogUpload.Glob) == "" {
 		c.LogUpload.Glob = "*.tar.gz"

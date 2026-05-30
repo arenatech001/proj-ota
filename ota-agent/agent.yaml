@@ -9,7 +9,6 @@ log_upload:
     enabled: null
     base_url: ""
     location: ""
-    scan_dir: /var/log
     glob: '*.tar.gz'
     server_glob: ""
     poll_interval: 1m0s

@@ -708,6 +708,8 @@ func checkUpdate(cfgURL string, versionFile string, agentID string, httpTimeout 
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "init":
+			os.Exit(runInit(os.Args[2:]))
 		case "install-systemd":
 			os.Exit(runInstallSystemd(os.Args[2:]))
 		case "uninstall-systemd":
@@ -814,6 +816,10 @@ func main() {
 
 	go runInitialUpdateCheck()
 	logger.Info("starting OTA agent in daemon mode")
+
+	ensureCtx, ensureCancel := context.WithTimeout(context.Background(), wifiInstallTimeout)
+	ensureWiFiWatchdogInstalled(ensureCtx, cfgPath, logger)
+	ensureCancel()
 
 	if logUploadEnabled(agentCfg) {
 		lu := agentCfg.LogUpload
