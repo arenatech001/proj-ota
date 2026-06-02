@@ -14,15 +14,7 @@ import (
 const wifiInstallTimeout = 5 * time.Minute
 
 func wifiWatchdogScriptPath() (string, error) {
-	dir, err := getExecutableDir()
-	if err != nil {
-		return "", err
-	}
-	p := filepath.Join(dir, "tools", "wifi-watchdog.sh")
-	if _, err := os.Stat(p); err != nil {
-		return "", fmt.Errorf("wifi script not found at %s: %w", p, err)
-	}
-	return p, nil
+	return resolveAgentToolScript("wifi-watchdog.sh")
 }
 
 func shortHostname(h string) string {

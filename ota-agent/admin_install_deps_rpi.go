@@ -6,22 +6,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 )
 
 func installDepsRpiScriptPath() (string, error) {
-	dir, err := getExecutableDir()
-	if err != nil {
-		return "", err
-	}
-	p := filepath.Join(dir, "tools", "install-deps-rpi.sh")
-	if _, err := os.Stat(p); err != nil {
-		return "", fmt.Errorf("install-deps-rpi script not found at %s: %w", p, err)
-	}
-	return p, nil
+	return resolveAgentToolScript("install-deps-rpi.sh")
 }
 
 // runInstallDepsRpiScript runs tools/install-deps-rpi.sh (apt SDL2 deps, ALSA, /boot/firmware/config.txt, etc.).

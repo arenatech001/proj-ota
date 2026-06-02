@@ -49,10 +49,23 @@ type Logger struct {
 }
 
 func newLogger() *Logger {
+	infoOut := io.Writer(os.Stdout)
+	warnOut := io.Writer(os.Stderr)
+	errOut := io.Writer(os.Stderr)
+
+	if logPath, err := resolveAgentLogFile(); err == nil {
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err == nil {
+			infoOut = io.MultiWriter(f, os.Stdout)
+			warnOut = io.MultiWriter(f, os.Stderr)
+			errOut = io.MultiWriter(f, os.Stderr)
+		}
+	}
+
 	return &Logger{
-		info:  log.New(os.Stdout, "[INFO] ", log.LstdFlags),
-		warn:  log.New(os.Stderr, "[WARN] ", log.LstdFlags),
-		error: log.New(os.Stderr, "[ERROR] ", log.LstdFlags),
+		info:  log.New(infoOut, "[INFO] ", log.LstdFlags),
+		warn:  log.New(warnOut, "[WARN] ", log.LstdFlags),
+		error: log.New(errOut, "[ERROR] ", log.LstdFlags),
 	}
 }
 
@@ -186,6 +199,47 @@ func getExecutableRelativePath(relativePath string) (string, error) {
 	// }
 
 	return filepath.Join(exeDir, cleanPath), nil
+}
+
+// agentInstallRoot is the agent deployment root (.../agent or .../agent when exe lives in bin/).
+func agentInstallRoot() (string, error) {
+	exeDir, err := getExecutableDir()
+	if err != nil {
+		return "", err
+	}
+	if st, err := os.Stat(filepath.Join(exeDir, "tools")); err == nil && st.IsDir() {
+		return exeDir, nil
+	}
+	parent := filepath.Clean(filepath.Join(exeDir, ".."))
+	if st, err := os.Stat(filepath.Join(parent, "tools")); err == nil && st.IsDir() {
+		return parent, nil
+	}
+	return exeDir, nil
+}
+
+func resolveAgentLogFile() (string, error) {
+	root, err := agentInstallRoot()
+	if err != nil {
+		return "", err
+	}
+	p := filepath.Join(root, "logs", "agent.log")
+	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+		return "", err
+	}
+	return p, nil
+}
+
+// resolveAgentToolScript finds tools/<name> under the agent install root.
+func resolveAgentToolScript(name string) (string, error) {
+	root, err := agentInstallRoot()
+	if err != nil {
+		return "", err
+	}
+	p := filepath.Join(root, "tools", name)
+	if _, err := os.Stat(p); err != nil {
+		return "", fmt.Errorf("tool script not found: %s (agent root %s)", name, root)
+	}
+	return p, nil
 }
 
 func readLocalVersion(path string) (string, error) {

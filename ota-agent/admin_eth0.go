@@ -6,22 +6,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 )
 
 func initEth0ScriptPath() (string, error) {
-	dir, err := getExecutableDir()
-	if err != nil {
-		return "", err
-	}
-	p := filepath.Join(dir, "tools", "init-eth0.sh")
-	if _, err := os.Stat(p); err != nil {
-		return "", fmt.Errorf("init-eth0 script not found at %s: %w", p, err)
-	}
-	return p, nil
+	return resolveAgentToolScript("init-eth0.sh")
 }
 
 // runInitEth0Script runs tools/init-eth0.sh (NetworkManager static profile for eth0, no default route).

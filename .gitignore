@@ -8,6 +8,7 @@ package-lock.json
 
 # Binary files
 *.bin
+*.exe
 test-binary
 
 # Apps directory (auto-generated)
@@ -36,4 +37,3 @@ npm-debug.log*
 # OS files
 .DS_Store
 Thumbs.db
-

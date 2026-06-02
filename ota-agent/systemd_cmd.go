@@ -88,7 +88,7 @@ func runInstallSystemd(args []string) int {
 		fmt.Fprintln(os.Stderr, "install-systemd flags:")
 		fs.PrintDefaults()
 	}
-	cfgFlag := fs.String("config", "/home/arenatech/agent/agent.yaml", "path to agent YAML (default: <exe-dir>/agent.yaml)")
+	cfgFlag := fs.String("config", "/home/arenatech/agent/config/agent.yaml", "path to agent YAML (default: <exe-dir>/agent.yaml)")
 	unitFlag := fs.String("unit", defaultSystemdUnit, "systemd unit name (without .service)")
 	descFlag := fs.String("description", "Arenatech Agent", "unit Description=")
 	userFlag := fs.String("user", "root", "Service User= (empty to omit)")
