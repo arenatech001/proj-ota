@@ -93,14 +93,26 @@ func pickAllLogFiles(scanDir, pattern, dateStart, dateEnd string) ([]string, err
 	return out, nil
 }
 
-// prepareUploadPayload 组装待上传文件：仅 client、仅 server、或二者合并为一个临时 tar.gz。
-// scanDir 为唯一扫描目录；serverGlob 非空时在同一目录下再按 server glob 收集 server 日志。
-func prepareUploadPayload(
-	scanDir, clientGlob, serverGlob string,
-	dateStart, dateEnd string,
-) (path string, cleanup func(), err error) {
-	cleanup = func() {}
+type logFilesBundle struct {
+	clientPath  string
+	serverPaths []string
+	agentPaths  []string
+}
 
+func (b *logFilesBundle) allPaths() []string {
+	if b == nil {
+		return nil
+	}
+	var out []string
+	if b.clientPath != "" {
+		out = append(out, b.clientPath)
+	}
+	out = append(out, b.serverPaths...)
+	out = append(out, b.agentPaths...)
+	return out
+}
+
+func collectLogFiles(scanDir, clientGlob, serverGlob, agentGlob, dateStart, dateEnd string) (*logFilesBundle, error) {
 	var clientPath string
 	if cp, e := pickLogFile(scanDir, clientGlob, dateStart, dateEnd); e == nil {
 		clientPath = cp
@@ -110,25 +122,71 @@ func prepareUploadPayload(
 	if strings.TrimSpace(serverGlob) != "" {
 		sp, e := pickAllLogFiles(scanDir, serverGlob, dateStart, dateEnd)
 		if e != nil {
-			return "", cleanup, e
+			return nil, e
 		}
 		serverPaths = sp
 	}
 
-	if clientPath == "" && len(serverPaths) == 0 {
-		return "", cleanup, fmt.Errorf("no client file under %s/%s and no server files under %s/%s in [%s,%s]",
-			scanDir, clientGlob, scanDir, serverGlob, dateStart, dateEnd)
+	var agentPaths []string
+	if strings.TrimSpace(agentGlob) != "" {
+		ap, e := pickAllLogFiles(scanDir, agentGlob, dateStart, dateEnd)
+		if e != nil {
+			return nil, e
+		}
+		agentPaths = ap
 	}
 
-	// 单文件直接上传
-	if clientPath != "" && len(serverPaths) == 0 {
-		return clientPath, cleanup, nil
+	if clientPath == "" && len(serverPaths) == 0 && len(agentPaths) == 0 {
+		return nil, fmt.Errorf("no client file under %s/%s and no server files under %s/%s and no agent files under %s/%s in [%s,%s]",
+			scanDir, clientGlob, scanDir, serverGlob, scanDir, agentGlob, dateStart, dateEnd)
 	}
-	if clientPath == "" && len(serverPaths) == 1 {
-		return serverPaths[0], cleanup, nil
+	return &logFilesBundle{
+		clientPath:  clientPath,
+		serverPaths: serverPaths,
+		agentPaths:  agentPaths,
+	}, nil
+}
+
+func addFileToTar(tw *tar.Writer, nameInTar, src string) error {
+	fi, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	hdr, err := tar.FileInfoHeader(fi, "")
+	if err != nil {
+		return err
+	}
+	hdr.Name = nameInTar
+	hdr.Size = fi.Size()
+	hdr.Mode = 0644
+	if err := tw.WriteHeader(hdr); err != nil {
+		return err
+	}
+	_, err = io.Copy(tw, f)
+	return err
+}
+
+// prepareUploadPayload 组装待上传文件：client / server / agent 日志；多文件时合并为临时 tar.gz。
+func prepareUploadPayload(
+	scanDir, clientGlob, serverGlob, agentGlob string,
+	dateStart, dateEnd string,
+) (path string, cleanup func(), err error) {
+	cleanup = func() {}
+
+	bundle, err := collectLogFiles(scanDir, clientGlob, serverGlob, agentGlob, dateStart, dateEnd)
+	if err != nil {
+		return "", cleanup, err
+	}
+	paths := bundle.allPaths()
+	if len(paths) == 1 {
+		return paths[0], cleanup, nil
 	}
 
-	// 多文件：打 tar.gz
 	tmp, err := os.CreateTemp("", "ota-log-bundle-*.tar.gz")
 	if err != nil {
 		return "", cleanup, err
@@ -139,41 +197,22 @@ func prepareUploadPayload(
 	gw := gzip.NewWriter(tmp)
 	tw := tar.NewWriter(gw)
 
-	addFile := func(nameInTar, src string) error {
-		fi, err := os.Stat(src)
-		if err != nil {
-			return err
-		}
-		f, err := os.Open(src)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		hdr, err := tar.FileInfoHeader(fi, "")
-		if err != nil {
-			return err
-		}
-		hdr.Name = nameInTar
-		hdr.Size = fi.Size()
-		hdr.Mode = 0644
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		if _, err := io.Copy(tw, f); err != nil {
-			return err
-		}
-		return nil
-	}
-
-	if clientPath != "" {
-		if err := addFile(filepath.ToSlash(filepath.Join("client", filepath.Base(clientPath))), clientPath); err != nil {
+	if bundle.clientPath != "" {
+		if err := addFileToTar(tw, filepath.ToSlash(filepath.Join("client", filepath.Base(bundle.clientPath))), bundle.clientPath); err != nil {
 			cleanup()
 			return "", func() {}, err
 		}
 	}
-	for i, sp := range serverPaths {
+	for i, sp := range bundle.serverPaths {
 		nameInTar := fmt.Sprintf("server/%02d-%s", i+1, filepath.Base(sp))
-		if err := addFile(filepath.ToSlash(nameInTar), sp); err != nil {
+		if err := addFileToTar(tw, filepath.ToSlash(nameInTar), sp); err != nil {
+			cleanup()
+			return "", func() {}, err
+		}
+	}
+	for i, ap := range bundle.agentPaths {
+		nameInTar := fmt.Sprintf("agent/%02d-%s", i+1, filepath.Base(ap))
+		if err := addFileToTar(tw, filepath.ToSlash(nameInTar), ap); err != nil {
 			cleanup()
 			return "", func() {}, err
 		}
@@ -298,7 +337,7 @@ func pollNextLogJob(baseURL, location, agentID string, timeout time.Duration) (*
 
 func runLogUploadLoop(
 	baseURL, location, agentID string,
-	scanDir, clientGlob, serverGlob string,
+	scanDir, clientGlob, serverGlob, agentGlob string,
 	pollInterval, httpTimeout, uploadTimeout time.Duration,
 	maxUploadBytes int64,
 	maxReportRetries int,
@@ -307,13 +346,8 @@ func runLogUploadLoop(
 	if baseURL == "" || location == "" || agentID == "" {
 		return
 	}
-	if strings.TrimSpace(serverGlob) != "" {
-		logger.Info("log upload loop: base=%s location=%s scan=%s client=%s server=%s",
-			baseURL, location, scanDir, clientGlob, serverGlob)
-	} else {
-		logger.Info("log upload loop: base=%s location=%s scan=%s glob=%s (no log_upload.server_glob)",
-			baseURL, location, scanDir, clientGlob)
-	}
+	logger.Info("log upload loop: base=%s location=%s scan=%s client=%s server=%s agent=%s",
+		baseURL, location, scanDir, clientGlob, serverGlob, agentGlob)
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -326,7 +360,7 @@ func runLogUploadLoop(
 			continue
 		}
 		logger.Info("log job claimed: id=%d range=%s..%s", job.ID, job.DateStart, job.DateEnd)
-		path, cleanup, err := prepareUploadPayload(scanDir, clientGlob, serverGlob, job.DateStart, job.DateEnd)
+		path, cleanup, err := prepareUploadPayload(scanDir, clientGlob, serverGlob, agentGlob, job.DateStart, job.DateEnd)
 		if err != nil {
 			logger.Warn("log job %d: no payload: %v", job.ID, err)
 			for i := 0; i < maxReportRetries; i++ {

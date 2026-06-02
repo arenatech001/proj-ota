@@ -11,11 +11,6 @@ import (
 	"time"
 )
 
-type logFilesBundle struct {
-	clientPath  string
-	serverPaths []string
-}
-
 func parseLogDateRange(dateStart, dateEnd string) error {
 	start, err1 := time.ParseInLocation("2006-01-02", strings.TrimSpace(dateStart), time.Local)
 	end, err2 := time.ParseInLocation("2006-01-02", strings.TrimSpace(dateEnd), time.Local)
@@ -30,27 +25,6 @@ func parseLogDateRange(dateStart, dateEnd string) error {
 		return fmt.Errorf("日期区间不能超过 %d 天", maxDays)
 	}
 	return nil
-}
-
-func collectLogFiles(scanDir, clientGlob, serverGlob, dateStart, dateEnd string) (*logFilesBundle, error) {
-	var clientPath string
-	if cp, e := pickLogFile(scanDir, clientGlob, dateStart, dateEnd); e == nil {
-		clientPath = cp
-	}
-
-	var serverPaths []string
-	if strings.TrimSpace(serverGlob) != "" {
-		sp, e := pickAllLogFiles(scanDir, serverGlob, dateStart, dateEnd)
-		if e != nil {
-			return nil, e
-		}
-		serverPaths = sp
-	}
-
-	if clientPath == "" && len(serverPaths) == 0 {
-		return nil, fmt.Errorf("指定日期区间内未找到匹配的 client 或 server 日志")
-	}
-	return &logFilesBundle{clientPath: clientPath, serverPaths: serverPaths}, nil
 }
 
 func addFileToZip(zw *zip.Writer, nameInZip, srcPath string) error {
@@ -95,6 +69,13 @@ func writeLogZip(w io.Writer, bundle *logFilesBundle) error {
 			return err
 		}
 	}
+	for i, ap := range bundle.agentPaths {
+		nameInZip := fmt.Sprintf("agent/%02d-%s", i+1, filepath.Base(ap))
+		if err := addFileToZip(zw, nameInZip, ap); err != nil {
+			_ = zw.Close()
+			return err
+		}
+	}
 	return zw.Close()
 }
 
@@ -122,9 +103,9 @@ func (s *adminServer) handleAPILogsDownload(w http.ResponseWriter, r *http.Reque
 	applyAgentDefaults(cfg)
 	lu := cfg.LogUpload
 
-	bundle, err := collectLogFiles(lu.ScanDir, lu.Glob, lu.ServerGlob, dateStart, dateEnd)
+	bundle, err := collectLogFiles(lu.ScanDir, lu.ClientGlob, lu.ServerGlob, lu.AgentGlob, dateStart, dateEnd)
 	if err != nil {
-		writeJSONError(w, http.StatusNotFound, err.Error())
+		writeJSONError(w, http.StatusNotFound, "指定日期区间内未找到匹配的 client、server 或 agent 日志")
 		return
 	}
 

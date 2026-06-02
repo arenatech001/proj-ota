@@ -71,7 +71,20 @@ func runInit(args []string) int {
 		return 1
 	}
 
-	logger := newLogger()
+	agentCfg, err := loadAgentConfig(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config %s: %v\n", cfgPath, err)
+		return 1
+	}
+	applyAgentDefaults(agentCfg)
+
+	logger, err := setupLogger(agentCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "logging: %v\n", err)
+		return 1
+	}
+	defer logger.Close()
+
 	ctx := context.Background()
 
 	fmt.Println("==> [1/4] install-systemd")

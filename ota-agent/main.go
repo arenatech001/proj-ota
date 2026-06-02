@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -39,46 +38,6 @@ type Config struct {
 	Version    string       `yaml:"version"`     // e.g. "1.2.0"
 	Files      []FileUpdate `yaml:"files"`       // list of files to update
 	RestartCmd string       `yaml:"restart_cmd"` // optional: global restart command after all updates
-}
-
-// Logger wraps log functions for structured logging
-type Logger struct {
-	info  *log.Logger
-	warn  *log.Logger
-	error *log.Logger
-}
-
-func newLogger() *Logger {
-	infoOut := io.Writer(os.Stdout)
-	warnOut := io.Writer(os.Stderr)
-	errOut := io.Writer(os.Stderr)
-
-	if logPath, err := resolveAgentLogFile(); err == nil {
-		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-		if err == nil {
-			infoOut = io.MultiWriter(f, os.Stdout)
-			warnOut = io.MultiWriter(f, os.Stderr)
-			errOut = io.MultiWriter(f, os.Stderr)
-		}
-	}
-
-	return &Logger{
-		info:  log.New(infoOut, "[INFO] ", log.LstdFlags),
-		warn:  log.New(warnOut, "[WARN] ", log.LstdFlags),
-		error: log.New(errOut, "[ERROR] ", log.LstdFlags),
-	}
-}
-
-func (l *Logger) Info(format string, v ...interface{}) {
-	l.info.Printf(format, v...)
-}
-
-func (l *Logger) Warn(format string, v ...interface{}) {
-	l.warn.Printf(format, v...)
-}
-
-func (l *Logger) Error(format string, v ...interface{}) {
-	l.error.Printf(format, v...)
 }
 
 // retryHTTPRequest executes an HTTP request with retry logic
@@ -215,18 +174,6 @@ func agentInstallRoot() (string, error) {
 		return parent, nil
 	}
 	return exeDir, nil
-}
-
-func resolveAgentLogFile() (string, error) {
-	root, err := agentInstallRoot()
-	if err != nil {
-		return "", err
-	}
-	p := filepath.Join(root, "logs", "agent.log")
-	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
-		return "", err
-	}
-	return p, nil
 }
 
 // resolveAgentToolScript finds tools/<name> under the agent install root.
@@ -774,13 +721,11 @@ func main() {
 	configPath := flag.String("config", "", "path to agent YAML (default: <exe-dir>/agent.yaml)")
 	flag.Parse()
 
-	logger := newLogger()
-
 	cfgPath := strings.TrimSpace(*configPath)
 	if cfgPath == "" {
 		p, err := defaultConfigPath()
 		if err != nil {
-			logger.Error("config path: %v", err)
+			fmt.Fprintf(os.Stderr, "config path: %v\n", err)
 			os.Exit(1)
 		}
 		cfgPath = p
@@ -788,14 +733,21 @@ func main() {
 
 	agentCfg, err := loadAgentConfig(cfgPath)
 	if err != nil {
-		logger.Error("load config %s: %v", cfgPath, err)
+		fmt.Fprintf(os.Stderr, "load config %s: %v\n", cfgPath, err)
 		os.Exit(1)
 	}
 	applyAgentDefaults(agentCfg)
 	if err := validateAgentConfig(agentCfg); err != nil {
-		logger.Error("invalid config: %v", err)
+		fmt.Fprintf(os.Stderr, "invalid config: %v\n", err)
 		os.Exit(1)
 	}
+
+	logger, err := setupLogger(agentCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "logging: %v\n", err)
+		os.Exit(1)
+	}
+	defer logger.Close()
 
 	versionFile, err := resolveVersionFilePath(agentCfg)
 	if err != nil {
@@ -819,8 +771,8 @@ func main() {
 	if logUploadEnabled(agentCfg) {
 		logger.Info("log_upload.base_url: %s", agentCfg.LogUpload.BaseURL)
 		logger.Info("log_upload.location: %s", agentCfg.LogUpload.Location)
-		logger.Info("log_upload.scan_dir: %s glob=%s server_glob=%q",
-			agentCfg.LogUpload.ScanDir, agentCfg.LogUpload.Glob, agentCfg.LogUpload.ServerGlob)
+		logger.Info("log_upload.scan_dir: %s glob=%s server_glob=%q agent_glob=%q",
+			agentCfg.LogUpload.ScanDir, agentCfg.LogUpload.ClientGlob, agentCfg.LogUpload.ServerGlob, agentCfg.LogUpload.AgentGlob)
 	}
 
 	procReg := newProcessRegistry(logger)
@@ -879,8 +831,8 @@ func main() {
 		lu := agentCfg.LogUpload
 		loc := strings.TrimSpace(lu.Location)
 		if lu.BaseURL != "" && loc != "" && strings.TrimSpace(agentCfg.AgentID) != "" {
-			go runLogUploadLoop(lu.BaseURL, loc, agentCfg.AgentID, lu.ScanDir, lu.Glob, strings.TrimSpace(lu.ServerGlob),
-				lu.PollInterval, agentCfg.HTTPTimeout, lu.UploadTimeout, lu.MaxUploadBytes, lu.ReportRetries, logger)
+			go runLogUploadLoop(lu.BaseURL, loc, agentCfg.AgentID, lu.ScanDir, lu.ClientGlob, strings.TrimSpace(lu.ServerGlob),
+				strings.TrimSpace(lu.AgentGlob), lu.PollInterval, agentCfg.HTTPTimeout, lu.UploadTimeout, lu.MaxUploadBytes, lu.ReportRetries, logger)
 		} else if lu.BaseURL != "" {
 			logger.Warn("log_upload enabled but incomplete: need log_upload.location and agent_id")
 		} else {

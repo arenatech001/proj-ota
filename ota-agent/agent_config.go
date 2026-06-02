@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	agentlog "ota-agent/internal/logger"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -31,6 +33,8 @@ type AgentConfig struct {
 
 	LogUpload LogUploadConfig `yaml:"log_upload"`
 
+	Logging agentlog.LoggingConfig `yaml:"logging"`
+
 	AdminUsername string `yaml:"admin_username" json:"admin_username"`
 	AdminPassword string `yaml:"admin_password" json:"-"`
 	AdminListen   string `yaml:"admin_listen" json:"admin_listen"` // e.g. 127.0.0.1:9001, empty = off
@@ -45,8 +49,9 @@ type LogUploadConfig struct {
 	BaseURL        string        `yaml:"base_url"`
 	Location       string        `yaml:"location"`
 	ScanDir        string        `yaml:"scan_dir"`
-	Glob           string        `yaml:"glob"`
+	ClientGlob     string        `yaml:"client_glob"`
 	ServerGlob     string        `yaml:"server_glob"`
+	AgentGlob      string        `yaml:"agent_glob"`
 	PollInterval   time.Duration `yaml:"poll_interval"`
 	UploadTimeout  time.Duration `yaml:"upload_timeout"`
 	MaxUploadBytes int64         `yaml:"max_upload_bytes"`
@@ -124,10 +129,18 @@ func applyAgentDefaults(c *AgentConfig) {
 		c.VersionFile = "version"
 	}
 	if strings.TrimSpace(c.LogUpload.ScanDir) == "" {
-		c.LogUpload.ScanDir = "/home/arenatech/agent/logs"
+		if root, err := agentInstallRoot(); err == nil {
+			c.LogUpload.ScanDir = filepath.Join(root, "logs")
+		}
 	}
-	if strings.TrimSpace(c.LogUpload.Glob) == "" {
-		c.LogUpload.Glob = "*.tar.gz"
+	if strings.TrimSpace(c.LogUpload.ClientGlob) == "" {
+		c.LogUpload.ClientGlob = "client.log*"
+	}
+	if strings.TrimSpace(c.LogUpload.ServerGlob) == "" {
+		c.LogUpload.ServerGlob = "server.log*"
+	}
+	if strings.TrimSpace(c.LogUpload.AgentGlob) == "" {
+		c.LogUpload.AgentGlob = "agent.log*"
 	}
 	if c.LogUpload.PollInterval == 0 {
 		c.LogUpload.PollInterval = time.Minute
@@ -141,6 +154,30 @@ func applyAgentDefaults(c *AgentConfig) {
 	if c.LogUpload.ReportRetries == 0 {
 		c.LogUpload.ReportRetries = 3
 	}
+	if strings.TrimSpace(c.Logging.Level) == "" {
+		c.Logging.Level = "info"
+	}
+	if strings.TrimSpace(c.Logging.Format) == "" {
+		c.Logging.Format = "json"
+	}
+	if strings.TrimSpace(c.Logging.Output) == "" {
+		c.Logging.Output = "both"
+	}
+	if c.Logging.MaxSize == 0 {
+		c.Logging.MaxSize = 10
+	}
+	if c.Logging.MaxBackups == 0 {
+		c.Logging.MaxBackups = 10
+	}
+	if c.Logging.MaxAge == 0 {
+		c.Logging.MaxAge = 28
+	}
+	if strings.TrimSpace(c.Logging.FilePath) == "" {
+		if root, err := agentInstallRoot(); err == nil {
+			c.Logging.FilePath = filepath.Join(root, "logs", "agent.log")
+		}
+	}
+	normalizeAgentLogUploadPaths(c)
 }
 
 func resolveVersionFilePath(cfg *AgentConfig) (string, error) {

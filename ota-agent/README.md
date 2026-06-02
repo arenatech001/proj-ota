@@ -61,9 +61,10 @@ log_upload:
   enabled: false
   base_url: "https://ota.example.com"
   location: "site-a"
-  scan_dir: "/var/log"
-  glob: "*.tar.gz"
-  server_glob: ""
+  scan_dir: "/home/arenatech/agent/logs"
+  glob: "client.log*"
+  server_glob: "server.log*"
+  agent_glob: "agent.log*"
   poll_interval: 1m
   upload_timeout: 30m
   max_upload_bytes: 524288000
