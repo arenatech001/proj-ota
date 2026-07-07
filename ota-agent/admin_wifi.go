@@ -41,7 +41,7 @@ func fillHotspotNetwork(n *AdminNetworkConfig) {
 		n.SSID = shortHostname(h)
 	}
 	if strings.TrimSpace(n.PSK) == "" {
-		n.PSK = "AtAdmin0502"
+		n.PSK = "Areantech0502"
 	}
 }
 

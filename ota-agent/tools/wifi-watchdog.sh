@@ -2,8 +2,8 @@
 #
 # WiFi 看门狗（NetworkManager / nmcli）。建议 root。
 # 从 agent.yaml 的 network 段读取 wifi_mode / wifi_ssid / wifi_psk / wifi_iface。
-# STA：启动后尝试连接；3 分钟内连不上则临时开热点（SSID=主机名，密码 AtAdmin0502），不修改 agent.yaml，重启后仍按配置优先 STA。
-# 热点：按配置或默认（主机名 + AtAdmin0502）启动 AP。
+# STA：启动后尝试连接；3 分钟内连不上则临时开热点（SSID=主机名，密码 Areantech0502），不修改 agent.yaml，重启后仍按配置优先 STA。
+# 热点：固定 SSID=主机名、密码 Areantech0502（不使用 agent.yaml 的 wifi_ssid/wifi_psk）。
 
 set -euo pipefail
 
@@ -13,7 +13,7 @@ SKIP_APPLY=0
 
 readonly UNIT_BASE="wifi-watchdog"
 readonly LOG_TAG="wifi-watchdog"
-readonly HOTSPOT_PSK="AtAdmin0502"
+readonly HOTSPOT_PSK="Arenatech0502"
 readonly STA_FAIL_TIMEOUT_SEC=180
 readonly TIMER_ON_BOOT_SEC=60
 readonly TIMER_INTERVAL_SEC=300
@@ -46,6 +46,7 @@ usage() {
 说明:
   配置来自 agent.yaml 的 network.wifi_mode / wifi_ssid / wifi_psk / wifi_iface。
   STA 模式：run 中 3 分钟内连不上目标 WiFi 则临时开热点（不改 agent.yaml，重启仍优先 STA）。
+  热点模式与 STA 回退热点：SSID 恒为当前主机名，密码 Arenatech0502。
   install 会注册 systemd 定时器（开机 60s、之后每 5 分钟 run 一次）。
 EOF
 }
@@ -111,17 +112,13 @@ load_network_config() {
   [[ "$NET_MODE" == "hotspot" ]] || NET_MODE="sta"
 }
 
-hostname_short() {
+# 热点 AP 的 SSID 固定为当前主机名（短名，不含域名）；与 agent.yaml 的 wifi_ssid 无关。
+hotspot_ssid() {
   local h
   h="$(hostname -s 2>/dev/null || true)"
   [[ -z "$h" ]] && h="$(hostname 2>/dev/null || echo "ota-device")"
   h="${h%%.*}"
   printf '%s' "$h"
-}
-
-apply_hotspot_defaults() {
-  [[ -z "$SSID" ]] && SSID="$(hostname_short)"
-  [[ -z "$PSK" ]] && PSK="$HOTSPOT_PSK"
 }
 
 escape_systemd_exec_arg() {
@@ -206,12 +203,23 @@ delete_all_saved_wifi_connections() {
   )
 }
 
+# 所有热点启动均经此函数；SSID 恒为 hotspot_ssid()，不使用全局 SSID 变量。
 hotspot_start_device() {
-  local dev="$1"
-  apply_hotspot_defaults
-  log "启动热点 SSID=$SSID"
+  local dev="$1" ap_ssid ap_psk out
+  ap_ssid="$(hotspot_ssid)"
+  ap_psk="$HOTSPOT_PSK"
+  log "启动热点 SSID=$ap_ssid（主机名）"
   nmcli radio wifi on || true
-  nmcli device wifi hotspot ifname "$dev" ssid "$SSID" password "$PSK"
+  nmcli device disconnect "$dev" 2>/dev/null || true
+  nmcli connection down Hotspot 2>/dev/null || true
+  sleep 2
+  ensure_radio "$dev"
+  if ! out=$(nmcli device wifi hotspot ifname "$dev" ssid "$ap_ssid" password "$ap_psk" band bg 2>&1); then
+    log "nmcli hotspot 失败: $out"
+    return 1
+  fi
+  log "热点已就绪: $out"
+  return 0
 }
 
 sta_try_connect_once() {
@@ -232,15 +240,11 @@ sta_try_connect_once() {
 }
 
 sta_fallback_to_hotspot() {
-  local dev="$1" target="$SSID"
-  apply_hotspot_defaults
-  log "STA：${STA_FAIL_TIMEOUT_SEC}s 内未连上 ${target}，开启临时热点 SSID=$SSID 密码=$PSK（不改 agent.yaml，重启仍优先 STA）"
-  nmcli device disconnect "$dev" 2>/dev/null || true
-  nmcli connection down Hotspot 2>/dev/null || true
-  sleep 2
-  ensure_radio "$dev"
+  local dev="$1" sta_target="$SSID" ap_ssid
+  ap_ssid="$(hotspot_ssid)"
+  log "STA：${STA_FAIL_TIMEOUT_SEC}s 内未连上 ${sta_target}，开启临时热点 SSID=$ap_ssid（主机名）密码=$HOTSPOT_PSK（不改 agent.yaml，重启仍优先 STA）"
   hotspot_start_device "$dev" || die "临时热点启动失败"
-  log "临时热点已开启 SSID=$SSID"
+  log "临时热点已开启 SSID=$ap_ssid"
   exit 0
 }
 
@@ -274,17 +278,17 @@ run_sta_watchdog() {
 }
 
 run_hotspot_watchdog() {
-  local dev
+  local dev ap_ssid
   dev="$(wifi_device)"
   [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
-  apply_hotspot_defaults
+  ap_ssid="$(hotspot_ssid)"
   ensure_radio "$dev"
-  if wifi_connected_to_ssid "$dev" "$SSID"; then
-    log "热点已运行 SSID=$SSID，跳过"
+  if wifi_connected_to_ssid "$dev" "$ap_ssid"; then
+    log "热点已运行 SSID=$ap_ssid，跳过"
     return 0
   fi
   hotspot_start_device "$dev" || die "热点启动失败"
-  log "热点已启动 SSID=$SSID"
+  log "热点已启动 SSID=$ap_ssid"
 }
 
 apply_sta_now() {
@@ -309,16 +313,12 @@ apply_sta_now() {
 }
 
 apply_hotspot_now() {
-  local dev
+  local dev ap_ssid
   dev="$(wifi_device)"
   [[ -n "$dev" ]] || die "未发现 WiFi 网卡"
-  apply_hotspot_defaults
+  ap_ssid="$(hotspot_ssid)"
   ensure_radio "$dev"
-  log "热点 apply：SSID=$SSID"
-  nmcli device disconnect "$dev" 2>/dev/null || true
-  nmcli connection down Hotspot 2>/dev/null || true
-  sleep 2
-  ensure_radio "$dev"
+  log "热点 apply：SSID=$ap_ssid"
   hotspot_start_device "$dev" || die "热点启动失败"
   log "热点 apply：已启动"
 }
@@ -326,10 +326,11 @@ apply_hotspot_now() {
 run_watchdog() {
   resolve_config_path
   load_network_config "$CONFIG_PATH"
-  log "WiFi run 配置=$CONFIG_PATH 模式=$NET_MODE SSID=${SSID:-—}"
   if [[ "$NET_MODE" == "hotspot" ]]; then
+    log "WiFi run 配置=$CONFIG_PATH 模式=hotspot 热点SSID=$(hotspot_ssid)（主机名）"
     run_hotspot_watchdog
   else
+    log "WiFi run 配置=$CONFIG_PATH 模式=sta SSID=${SSID:-—}"
     run_sta_watchdog
   fi
 }
@@ -337,10 +338,11 @@ run_watchdog() {
 apply_wifi_now() {
   resolve_config_path
   load_network_config "$CONFIG_PATH"
-  log "apply：模式=$NET_MODE SSID=${SSID:-—}"
   if [[ "$NET_MODE" == "hotspot" ]]; then
+    log "apply：模式=hotspot 热点SSID=$(hotspot_ssid)（主机名）"
     apply_hotspot_now
   else
+    log "apply：模式=sta SSID=${SSID:-—}"
     apply_sta_now || true
   fi
 }

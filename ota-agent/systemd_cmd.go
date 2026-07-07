@@ -91,7 +91,7 @@ func runInstallSystemd(args []string) int {
 	cfgFlag := fs.String("config", "/home/arenatech/agent/config/agent.yaml", "path to agent YAML (default: <exe-dir>/agent.yaml)")
 	unitFlag := fs.String("unit", defaultSystemdUnit, "systemd unit name (without .service)")
 	descFlag := fs.String("description", "Arenatech Agent", "unit Description=")
-	userFlag := fs.String("user", "root", "Service User= (empty to omit)")
+	userFlag := fs.String("user", "arenatech", "Service User= (empty to omit)")
 	fs.Parse(args)
 	if fs.NArg() != 0 {
 		fmt.Fprintf(os.Stderr, "unexpected arguments: %v\n", fs.Args())
@@ -210,7 +210,7 @@ func printSystemdSubcommandUsage() {
   %s install-systemd [-config=PATH] [-unit=NAME] [-description=TEXT] [-user=USER]
   %s uninstall-systemd [-unit=NAME]
 
-init: install-systemd + install-deps-rpi.sh + init-eth0.sh + WiFi hotspot (wifi-watchdog install).
+init: install-systemd + install-deps-rpi.sh + init-eth0.sh + wifi-watchdog install (--no-apply).
 install-systemd writes /etc/systemd/system/<unit>.service, runs systemctl daemon-reload, and enable --now.
 Requires Linux (systemd) and root. Subcommand must be the first argument (not after agent -config).
 

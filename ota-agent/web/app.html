@@ -26,7 +26,7 @@
     </table>
   </section>
   <section id="net" style="display:none;">
-    <p class="muted">保存 WiFi 写入 agent.yaml 并注册 wifi-watchdog 定时器（立即尝试连接）。热点 SSID=主机名、密码 AtAdmin0502；STA 在 3 分钟连不上时会<strong>临时</strong>开热点，重启后仍按 agent.yaml 优先 STA。改 hostname 需 Linux + 权限。</p>
+    <p class="muted">保存 WiFi 写入 agent.yaml 并注册 wifi-watchdog 定时器（立即尝试连接）。热点 SSID=主机名、密码 Areantech0502；STA 在 3 分钟连不上时会<strong>临时</strong>开热点，重启后仍按 agent.yaml 优先 STA。改 hostname 需 Linux + 权限。</p>
     <pre class="raw" id="nstatus"></pre>
     <label>主机名</label>
     <input id="hostname" style="max-width:320px;"/>
@@ -41,9 +41,7 @@
       <label>密码（留空则不修改已存密码）</label>
       <input id="wpsk" type="password" style="max-width:320px;"/>
     </div>
-    <p id="whotspot-hint" class="muted" style="display:none;margin:.35rem 0;font-size:.85rem;">热点：未填 SSID 时用主机名；密码默认 AtAdmin0502（镜像构建时常为 AT-xxxxxx + AtAdmin0502）。</p>
-    <label>无线网卡（可选，如 wlan0）</label>
-    <input id="wiface" placeholder="留空则自动检测" style="max-width:320px;"/>
+    <p id="whotspot-hint" class="muted" style="display:none;margin:.35rem 0;font-size:.85rem;">热点：SSID 固定为主机名；密码固定 Areantech0502（与 STA 的 wifi_ssid/wifi_psk 无关）。</p>
     <div class="net-wifi-actions">
       <button type="button" id="savenet" style="background:#238636;">保存并应用 WiFi</button>
     </div>
@@ -259,7 +257,6 @@
       const n = await r2.json();
       document.getElementById('wmode').value = (n.wifi_mode || 'sta').toLowerCase();
       document.getElementById('wssid').value = n.wifi_ssid || '';
-      document.getElementById('wiface').value = n.wifi_iface || '';
       document.getElementById('wpsk').value = '';
       syncWiFiFormMode();
       const h = await api('/api/network/status');
@@ -286,7 +283,6 @@
       const body = {
         wifi_mode: document.getElementById('wmode').value,
         wifi_ssid: document.getElementById('wssid').value.trim(),
-        wifi_iface: document.getElementById('wiface').value.trim(),
         wifi_psk: document.getElementById('wpsk').value
       };
       const r = await api('/api/network', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

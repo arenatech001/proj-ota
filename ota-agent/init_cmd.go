@@ -16,7 +16,7 @@ func printInitUsage() {
   %s init [-config=PATH] [-unit=NAME] [-description=TEXT] [-user=USER]
 
 首次部署：安装 arenatech-agent systemd、运行 install-deps-rpi.sh、init-eth0.sh，
-写入热点模式到 agent.yaml，并执行 wifi-watchdog install --config ... --no-apply 注册定时器。
+并执行 wifi-watchdog install --config ... --no-apply 注册定时器（不修改 agent.yaml）。
 
 需要 Linux、root，且 -config 指向的 agent.yaml 须已存在（install-systemd 会引用该文件）。
 
@@ -39,10 +39,10 @@ func runInit(args []string) int {
 		printInitUsage()
 		fs.PrintDefaults()
 	}
-	cfgFlag := fs.String("config", "/home/arenatech/agent/agent.yaml", "path to agent YAML")
+	cfgFlag := fs.String("config", "", "path to agent YAML")
 	unitFlag := fs.String("unit", defaultSystemdUnit, "systemd unit name for ota-agent (without .service)")
 	descFlag := fs.String("description", "Arenatech Agent", "ota-agent unit Description=")
-	userFlag := fs.String("user", "root", "ota-agent Service User= (empty to omit)")
+	userFlag := fs.String("user", "arenatech", "ota-agent Service User= (empty to omit)")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -123,31 +123,15 @@ func runInit(args []string) int {
 	}
 
 	fmt.Println("==> [4/4] wifi-watchdog install (--no-apply)")
-	wifiOut, err := runWiFiHotspotInit(ctx, cfgPath, logger)
+	wifiOut, err := runWiFiInstall(ctx, cfgPath, true, logger)
 	if wifiOut != "" {
 		fmt.Print(wifiOut)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "wifi hotspot init failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "wifi-watchdog install failed: %v\n", err)
 		return 1
 	}
 
 	fmt.Println("init complete")
 	return 0
-}
-
-// runWiFiHotspotInit sets network.wifi_mode=hotspot in agent.yaml and runs wifi-watchdog install.
-func runWiFiHotspotInit(ctx context.Context, cfgPath string, logger *Logger) (string, error) {
-	cfg, err := loadAgentConfig(cfgPath)
-	if err != nil {
-		return "", err
-	}
-	applyAgentDefaults(cfg)
-	cfg.Network.WiFiMode = "hotspot"
-	fillHotspotNetwork(&cfg.Network)
-	if err := saveAgentConfigAtomic(cfgPath, cfg); err != nil {
-		return "", err
-	}
-	logger.Info("wifi: saved hotspot mode in %s (ssid=%s)", cfgPath, cfg.Network.SSID)
-	return runWiFiInstall(ctx, cfgPath, true, logger)
 }
