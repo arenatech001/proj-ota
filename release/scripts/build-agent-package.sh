@@ -65,6 +65,7 @@ require_file "${PROJ_OTA_AGENT}/agent-arm64.bin"
 require_file "${PROJ_OTA_AGENT}/tools/wifi-watchdog.sh"
 require_file "${PROJ_OTA_AGENT}/tools/install-deps-rpi.sh"
 require_file "${PROJ_OTA_AGENT}/tools/init-eth0.sh"
+require_file "${PROJ_OTA_AGENT}/tools/init-system-pi2.sh"
 
 mkdir -p "${OUT}/bin" "${OUT}/config" "${OUT}/tools" "${OUT}/logs"
 
@@ -93,12 +94,14 @@ echo "==> 拷贝 tools"
 install -m 755 "${PROJ_OTA_AGENT}/tools/wifi-watchdog.sh" "${OUT}/tools/wifi-watchdog.sh"
 install -m 755 "${PROJ_OTA_AGENT}/tools/install-deps-rpi.sh" "${OUT}/tools/install-deps-rpi.sh"
 install -m 755 "${PROJ_OTA_AGENT}/tools/init-eth0.sh" "${OUT}/tools/init-eth0.sh"
+install -m 755 "${PROJ_OTA_AGENT}/tools/init-system-pi2.sh" "${OUT}/tools/init-system-pi2.sh"
 
 echo "==> dos2unix 脚本"
 dos2unix_file \
 	"${OUT}/tools/wifi-watchdog.sh" \
 	"${OUT}/tools/install-deps-rpi.sh" \
-	"${OUT}/tools/init-eth0.sh"
+	"${OUT}/tools/init-eth0.sh" \
+	"${OUT}/tools/init-system-pi2.sh"
 
 echo "==> 设置可执行权限"
 chmod 755 "${OUT}/bin/agent-arm64.bin" "${OUT}/bin/client-arm64.bin" "${OUT}/bin/server-arm64.bin"

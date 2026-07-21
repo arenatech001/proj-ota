@@ -709,8 +709,10 @@ func checkUpdate(cfgURL string, versionFile string, agentID string, httpTimeout 
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "init":
-			os.Exit(runInit(os.Args[2:]))
+		case "init-rpi":
+			os.Exit(runInitRpi(os.Args[2:]))
+		case "init-pi2":
+			os.Exit(runInitPi2(os.Args[2:]))
 		case "install-systemd":
 			os.Exit(runInstallSystemd(os.Args[2:]))
 		case "uninstall-systemd":

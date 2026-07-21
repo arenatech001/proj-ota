@@ -11,32 +11,60 @@ import (
 	"time"
 )
 
-func printInitUsage() {
+func printInitRpiUsage() {
 	fmt.Fprintf(os.Stderr, `Usage:
-  %s init [-config=PATH] [-unit=NAME] [-description=TEXT] [-user=USER]
+  %s init-rpi [-config=PATH] [-unit=NAME] [-description=TEXT] [-user=USER]
 
-首次部署：安装 arenatech-agent systemd、运行 install-deps-rpi.sh、init-eth0.sh，
-并执行 wifi-watchdog install --config ... --no-apply 注册定时器（不修改 agent.yaml）。
+树莓派首次部署：install-systemd + install-deps-rpi.sh + init-eth0.sh + wifi-watchdog install (--no-apply)。
 
-需要 Linux、root，且 -config 指向的 agent.yaml 须已存在（install-systemd 会引用该文件）。
+需要 Linux、root，且 -config 指向的 agent.yaml 须已存在。
 
 `, filepath.Base(os.Args[0]))
 }
 
-func runInit(args []string) int {
+func printInitPi2Usage() {
+	fmt.Fprintf(os.Stderr, `Usage:
+  %s init-pi2 [-config=PATH] [-unit=NAME] [-description=TEXT] [-user=USER]
+
+PI2（Armbian）首次部署：install-systemd + init-system-pi2.sh + init-eth0.sh + wifi-watchdog install (--no-apply)。
+
+需要 Linux、root，且 -config 指向的 agent.yaml 须已存在。
+
+`, filepath.Base(os.Args[0]))
+}
+
+func runInitRpi(args []string) int {
+	return runInitPlatform("init-rpi", printInitRpiUsage, args, func(ctx context.Context, logger *Logger) (string, error) {
+		return runInstallDepsRpiScript(ctx, logger)
+	}, "install-deps-rpi.sh")
+}
+
+func runInitPi2(args []string) int {
+	return runInitPlatform("init-pi2", printInitPi2Usage, args, func(ctx context.Context, logger *Logger) (string, error) {
+		return runInitSystemPi2Script(ctx, logger)
+	}, "init-system-pi2.sh")
+}
+
+func runInitPlatform(
+	cmdName string,
+	printUsage func(),
+	args []string,
+	runPlatformDeps func(ctx context.Context, logger *Logger) (string, error),
+	depsLabel string,
+) int {
 	if runtime.GOOS != "linux" {
-		fmt.Fprintln(os.Stderr, "init only supports Linux")
+		fmt.Fprintf(os.Stderr, "%s only supports Linux\n", cmdName)
 		return 1
 	}
 	if os.Geteuid() != 0 {
-		fmt.Fprintln(os.Stderr, "init requires root (sudo)")
+		fmt.Fprintf(os.Stderr, "%s requires root (sudo)\n", cmdName)
 		return 1
 	}
 
-	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	fs := flag.NewFlagSet(cmdName, flag.ExitOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
-		printInitUsage()
+		printUsage()
 		fs.PrintDefaults()
 	}
 	cfgFlag := fs.String("config", "", "path to agent YAML")
@@ -98,15 +126,15 @@ func runInit(args []string) int {
 		return code
 	}
 
-	fmt.Println("==> [2/4] install-deps-rpi.sh")
+	fmt.Printf("==> [2/4] %s\n", depsLabel)
 	depsCtx, depsCancel := context.WithTimeout(ctx, 30*time.Minute)
-	out, err := runInstallDepsRpiScript(depsCtx, logger)
+	out, err := runPlatformDeps(depsCtx, logger)
 	depsCancel()
 	if out != "" {
 		fmt.Print(out)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "install-deps-rpi failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s failed: %v\n", depsLabel, err)
 		return 1
 	}
 
@@ -132,6 +160,6 @@ func runInit(args []string) int {
 		return 1
 	}
 
-	fmt.Println("init complete")
+	fmt.Printf("%s complete\n", cmdName)
 	return 0
 }

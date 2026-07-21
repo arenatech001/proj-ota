@@ -1,0 +1,32 @@
+server:
+  port: 8000
+  host: "0.0.0.0"
+  # 发现 RcuBox 时使用的网卡名（Linux: eth0 / Windows: 以太网 等）；不填则自动选默认出口 IPv4
+  # local_interface: "eth0"
+  read_timeout: 30s
+  write_timeout: 30s
+  is_mock: false
+  location: "无锡6S"
+  battle_ticker: 100ms
+  database_path: /home/arenatech/agent/bin/ranks.db
+
+  # 串口配置
+  serial:
+    enable: false  # 是否启用串口通信
+    port: "/dev/ttyUSB0"  # 串口设备路径
+
+
+logging:
+  level: "debug"
+  format: "console"
+  output: "both"
+  file_path: "logs/server.log"
+  max_size: 10
+  max_backups: 10
+  max_age: 28
+  compress: false
+
+rcu_box_list:
+  # - rcu_box_id: "2"
+  #   ip: "127.0.0.1"
+  #   port: 9001

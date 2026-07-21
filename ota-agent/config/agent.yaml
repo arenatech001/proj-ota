@@ -1,0 +1,47 @@
+config_url: http://www.arenatech.cn/ota/agent-v2.1/version.yaml
+version_file: version
+agent_id: ""
+daemon: null
+check_interval: 5m0s
+http_timeout: 30s
+download_timeout: 30m0s
+max_retries: 3
+log_upload:
+    enabled: null
+    base_url: ""
+    location: ""
+    scan_dir: /home/arenatech/agent/logs
+    client_glob: client.log*
+    server_glob: server.log*
+    agent_glob: agent.log*
+    poll_interval: 1m0s
+    upload_timeout: 30m0s
+    max_upload_bytes: 524288000
+    report_retries: 3
+logging:
+    level: info
+    format: json
+    output: both
+    file_path: /home/arenatech/agent/logs/agent.log
+    max_size: 10
+    max_backups: 10
+    max_age: 28
+    compress: false
+admin_username: admin
+admin_password: "123456"
+admin_listen: 0.0.0.0:9001
+processes:
+    - id: "1"
+      executable: /home/arenatech/agent/bin/client-arm64.bin
+      args:
+        - -id
+        - "5"
+      enabled: true
+    - id: "2"
+      executable: /home/arenatech/agent/bin/server-arm64.bin
+      args: []
+      enabled: false
+network:
+    wifi_mode: sta
+    wifi_ssid: AT001
+    wifi_psk: Arenatech0502

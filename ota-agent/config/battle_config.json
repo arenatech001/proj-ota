@@ -1,0 +1,94 @@
+{
+  "battle_id": "DefaultBattle",
+  "round": 0,
+  "max_round": 1,
+  "respawn_time": 6000,
+  "battle_duration": 60000,
+  "countdown_time": 5050,
+  "teams": {
+    "team_blue": {
+      "team_name": "蓝方",
+      "robots": {
+        "6": {
+          "rcubox_id": "6",
+          "name": "蓝方机器狗",
+          "cs_id": 0,
+          "role": "balanced"
+        }
+      }
+    },
+    "team_red": {
+      "team_name": "红方",
+      "robots": {
+        "5": {
+          "rcubox_id": "5",
+          "name": "红方机器狗",
+          "cs_id": 0,
+          "role": "sniper"
+        }
+      }
+    }
+  },
+  "roles": {
+    "balanced": {
+      "role_name": "突击犬",
+      "hit_damage": 360,
+      "hit_score": 0,
+      "hit_random": 0,
+      "max_health": 10000,
+      "max_ammo": 30000,
+      "magazine_size": 60,
+      "reload_time": 2500,
+      "shoot_cooldown": 150,
+      "move_speed": 0.85,
+      "hold_fire": true,
+      "attack_rate": 10,
+      "role_color": {
+        "R": 255,
+        "G": 0,
+        "B": 0,
+        "A": 255
+      }
+    },
+    "sniper": {
+      "role_name": "狙击犬",
+      "hit_damage": 1150,
+      "hit_score": 0,
+      "hit_random": 0,
+      "max_health": 7000,
+      "max_ammo": 30000,
+      "magazine_size": 10,
+      "reload_time": 3000,
+      "shoot_cooldown": 150,
+      "move_speed": 0.7,
+      "hold_fire": false,
+      "attack_rate": 0.68,
+      "role_color": {
+        "R": 0,
+        "G": 0,
+        "B": 255,
+        "A": 255
+      }
+    },
+    "tank": {
+      "role_name": "冲锋犬",
+      "hit_damage": 260,
+      "hit_score": 0,
+      "hit_random": 0,
+      "max_health": 15000,
+      "max_ammo": 30000,
+      "magazine_size": 100,
+      "reload_time": 3300,
+      "shoot_cooldown": 150,
+      "move_speed": 1,
+      "hold_fire": true,
+      "attack_rate": 14.28,
+      "role_color": {
+        "R": 0,
+        "G": 255,
+        "B": 0,
+        "A": 255
+      }
+    }
+  }
+}
