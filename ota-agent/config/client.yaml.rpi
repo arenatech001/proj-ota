@@ -1,0 +1,109 @@
+rcubox_id: "5"
+rcubox_version: "2.1"
+rcubox_port: 9000
+status_interval: 1
+admin_ui:
+    enable: true
+    username: admin
+    password: "123456"
+go2:
+    go2_ip: 192.168.123.161
+    aes128_key: fb082293b5a97c795cf1bc25a8ce18ac
+    video_opend: false
+    is_mock_go2: false
+webrtc:
+    enable: true
+    ice_servers:
+        - stun:stun.l.google.com:19302
+    video_codec: h264
+    connection_timeout: 30
+remote_server:
+    enable: false
+    host: arenatech.cn
+    port: 80
+    path: /ws/robot
+logging:
+    level: debug
+    format: json
+    output: both
+    max_size: 10
+    max_backups: 10
+    max_age: 28
+    compress: false
+mock_robot:
+    battery_level: 100
+    temperature: 25
+    mode: ""
+    connected: true
+command_executor:
+    enable: true
+    execution_rate: 33
+    retention_time: 33
+    move_smooth_factors:
+        x: 0.15
+        "y": 0.15
+        z: 0.3
+    move_max_factors:
+        x: 0.7
+        "y": 0.5
+        z: 0.7
+    euler_smooth_factors:
+        x: 0.1
+        "y": 0.1
+        z: 0.1
+    euler_max_factors:
+        x: 0.2
+        "y": 0.12
+        z: 0.135
+rs485:
+    enable: false
+    address: 1
+    baud_rate: 2400
+    max_speed: 100
+    serial_port: /dev/ttyUSB0
+    verbose: false
+ps2:
+    enable: true
+    pin_mode: chardev
+    scan_interval_ms: 33
+    idle_scan_interval_ms: 100
+    data_pin:
+        chip_name: gpiochip3
+        offset: 30
+    cmd_pin:
+        chip_name: gpiochip3
+        offset: 31
+    cs_pin:
+        chip_name: gpiochip0
+        offset: 17
+    clk_pin:
+        chip_name: gpiochip4
+        offset: 21
+    data_pin_name: GPIO5
+    cmd_pin_name: GPIO6
+    cs_pin_name: GPIO13
+    clk_pin_name: GPIO19
+cs:
+    enable: false
+    shoot_pin_name: GPIO20
+    reload_pin_name: GPIO21
+    shoot_chip: gpiochip0
+    shoot_offset: 20
+    reload_chip: gpiochip0
+    reload_offset: 21
+    pulse_duration: 50
+strip_led:
+    enable: true
+    device: /dev/spidev1.0
+    count: 36
+    speed: 3200000
+    frame_interval_ms: 0
+uart:
+    enable: true
+    serial_port: /dev/ttyS2
+    baud_rate: 9600
+    read_timeout_us: 5000
+audio_engine:
+    enable: true
+    muted: false
+    system_output_volume_percent: 40

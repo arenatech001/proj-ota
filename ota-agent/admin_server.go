@@ -162,6 +162,10 @@ func (s *adminServer) Start() error {
 	mux.HandleFunc("/api/network/hostname", s.handleAPIHostname)
 	mux.HandleFunc("/api/network/init-eth0", s.handleAPIInitEth0)
 	mux.HandleFunc("/api/system/install-deps-rpi", s.handleAPIInstallDepsRpi)
+	mux.HandleFunc("/api/bluetooth/paired", s.handleAPIBluetoothPaired)
+	mux.HandleFunc("/api/bluetooth/scan", s.handleAPIBluetoothScan)
+	mux.HandleFunc("/api/bluetooth/pair", s.handleAPIBluetoothPair)
+	mux.HandleFunc("/api/bluetooth/remove", s.handleAPIBluetoothRemove)
 	mux.HandleFunc("/api/logs/download", s.handleAPILogsDownload)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.static))))
 
@@ -603,10 +607,16 @@ func (s *adminServer) handleAPIHostname(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
-	cmd := exec.Command("hostnamectl", "set-hostname", h)
-	out, hcErr := cmd.CombinedOutput()
+	hostnamectl, lookErr := exec.LookPath("hostnamectl")
+	if lookErr != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, lookErr.Error()), http.StatusInternalServerError)
+		return
+	}
+	hcCtx, hcCancel := context.WithTimeout(r.Context(), 30*time.Second)
+	out, hcErr := runPrivilegedCombined(hcCtx, hostnamectl, "set-hostname", h)
+	hcCancel()
 	if hcErr != nil && !userDataUpdated {
-		http.Error(w, fmt.Sprintf(`{"error":%q}`, strings.TrimSpace(string(out))), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, strings.TrimSpace(out)), http.StatusInternalServerError)
 		return
 	}
 	resp := map[string]any{
@@ -616,7 +626,7 @@ func (s *adminServer) handleAPIHostname(w http.ResponseWriter, r *http.Request) 
 		"message":                     "主机名变更须重启 Linux 后方可完全生效（当前已尽量用 hostnamectl 与 user-data 落盘）。",
 	}
 	if hcErr != nil {
-		resp["hostnamectl_error"] = strings.TrimSpace(string(out))
+		resp["hostnamectl_error"] = strings.TrimSpace(out)
 	}
 	if userDataUpdated {
 		resp["raspberry_user_data_path"] = raspberryFirmwareUserData

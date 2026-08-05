@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,6 +14,10 @@ const wifiInstallTimeout = 5 * time.Minute
 
 func wifiWatchdogScriptPath() (string, error) {
 	return resolveAgentToolScript("wifi-watchdog.sh")
+}
+
+func wifiApplyScriptPath() (string, error) {
+	return resolveAgentToolScript("wifi-apply.sh")
 }
 
 func shortHostname(h string) string {
@@ -41,13 +44,12 @@ func fillHotspotNetwork(n *AdminNetworkConfig) {
 		n.SSID = shortHostname(h)
 	}
 	if strings.TrimSpace(n.PSK) == "" {
-		n.PSK = "Areantech0502"
+		n.PSK = "Arenatech0502"
 	}
 }
 
-// runWiFiInstall registers systemd timer (reads agent.yaml on each run) and optionally applies WiFi now.
-// STA 临时回退热点仅在定时 run 中发生，不修改 agent.yaml（重启后仍优先 STA）。
-func runWiFiInstall(ctx context.Context, cfgPath string, skipApply bool, logger *Logger) (out string, err error) {
+// runWiFiInstall registers systemd timer (wifi-watchdog.sh run). Does not apply WiFi now.
+func runWiFiInstall(ctx context.Context, cfgPath string, logger *Logger) (out string, err error) {
 	if runtime.GOOS != "linux" {
 		return "", nil
 	}
@@ -69,19 +71,43 @@ func runWiFiInstall(ctx context.Context, cfgPath string, skipApply bool, logger 
 		"--config", cfgPath,
 		"--install-path", script,
 	}
-	if skipApply {
-		args = append(args, "--no-apply")
+
+	cctx, cancel := context.WithTimeout(ctx, wifiInstallTimeout)
+	defer cancel()
+	out, runErr := runPrivilegedCombined(cctx, script, args...)
+	if runErr != nil {
+		if logger != nil {
+			logger.Error("wifi-watchdog install: %v\n%s", runErr, out)
+		}
+		return out, fmt.Errorf("%w: %s", runErr, strings.TrimSpace(out))
+	}
+	return out, nil
+}
+
+// runWiFiApply applies network settings from agent.yaml immediately (wifi-apply.sh).
+func runWiFiApply(ctx context.Context, cfgPath string, logger *Logger) (out string, err error) {
+	if runtime.GOOS != "linux" {
+		return "", nil
+	}
+	script, err := wifiApplyScriptPath()
+	if err != nil {
+		return "", err
+	}
+	cfgPath = strings.TrimSpace(cfgPath)
+	if cfgPath == "" {
+		return "", fmt.Errorf("config path is empty")
+	}
+	cfgPath, err = filepath.Abs(cfgPath)
+	if err != nil {
+		return "", err
 	}
 
 	cctx, cancel := context.WithTimeout(ctx, wifiInstallTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, script, args...)
-	cmd.Env = os.Environ()
-	combined, runErr := cmd.CombinedOutput()
-	out = string(combined)
+	out, runErr := runPrivilegedCombined(cctx, script, "apply", "--config", cfgPath)
 	if runErr != nil {
 		if logger != nil {
-			logger.Error("wifi install: %v\n%s", runErr, out)
+			logger.Error("wifi-apply: %v\n%s", runErr, out)
 		}
 		return out, fmt.Errorf("%w: %s", runErr, strings.TrimSpace(out))
 	}
@@ -93,13 +119,7 @@ func ensureWiFiWatchdogInstalled(ctx context.Context, cfgPath string, logger *Lo
 	if runtime.GOOS != "linux" {
 		return
 	}
-	if os.Geteuid() != 0 {
-		if logger != nil {
-			logger.Info("wifi-watchdog: skip auto-install (not root)")
-		}
-		return
-	}
-	out, err := runWiFiInstall(ctx, cfgPath, true, logger)
+	out, err := runWiFiInstall(ctx, cfgPath, logger)
 	if err != nil {
 		if logger != nil {
 			logger.Warn("wifi-watchdog auto-install: %v", err)
@@ -111,7 +131,12 @@ func ensureWiFiWatchdogInstalled(ctx context.Context, cfgPath string, logger *Lo
 	}
 }
 
-// applyWiFiOnSave runs install and applies WiFi immediately from agent.yaml.
+// applyWiFiOnSave applies WiFi immediately, then ensures the watchdog timer is installed.
 func applyWiFiOnSave(ctx context.Context, rt *adminRuntime, logger *Logger) (out string, err error) {
-	return runWiFiInstall(ctx, rt.path, false, logger)
+	applyOut, applyErr := runWiFiApply(ctx, rt.path, logger)
+	ensureWiFiWatchdogInstalled(ctx, rt.path, logger)
+	if applyErr != nil {
+		return applyOut, applyErr
+	}
+	return applyOut, nil
 }

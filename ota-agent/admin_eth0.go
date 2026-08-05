@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"time"
@@ -26,16 +23,12 @@ func runInitEth0Script(ctx context.Context, logger *Logger) (string, error) {
 	}
 	cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, script)
-	cmd.Env = os.Environ()
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	if err := cmd.Run(); err != nil {
+	out, err := runPrivilegedCombined(cctx, script)
+	if err != nil {
 		if logger != nil {
-			logger.Error("init-eth0: %v\n%s", err, strings.TrimSpace(buf.String()))
+			logger.Error("init-eth0: %v\n%s", err, strings.TrimSpace(out))
 		}
-		return buf.String(), err
+		return out, err
 	}
-	return buf.String(), nil
+	return out, nil
 }

@@ -218,16 +218,16 @@ journalctl -u ota-agent -f
 
 在**同一份** `ota-agent.yaml` 中设置 `admin_listen`（如 `127.0.0.1:9001`）且配置 `admin_username` / `admin_password` 后，浏览器访问该地址即可登录管理（进程表、网络、WiFi 看门狗等）。**不提供** Web 改密；修改 YAML 后需**重启** ota-agent。
 
-- **WiFi**：`tools/wifi-watchdog.sh`；依赖 **NetworkManager**；建议 **root**。命令行参数为 **`--mode` / `--ssid` / `--psk` / `--iface`**（STA 与热点共用 SSID/PSK）。保存配置且 `network` 中 WiFi 相关字段变化时，agent 在 Linux 上会执行脚本的 **`install-timer`** 重写 systemd unit 并 **`daemon-reload`**，使定时看门狗与当前模式一致。
+- **WiFi**：`tools/wifi-apply.sh`（Web 保存后立即改网）+ `tools/wifi-watchdog.sh`（systemd 定时检查 STA，失败则临时开热点，不改 yaml）。依赖 **NetworkManager**；建议 **root**。配置来自 agent.yaml 的 `network.wifi_mode` / `wifi_ssid` / `wifi_psk` / `wifi_iface`。
 - **主机名**：Linux 下 `PUT /api/network/hostname` 会调用 `hostnamectl set-hostname`，并在存在 **`/boot/firmware/user-data`** 时改写其中的 **`hostname:`**（树莓派 cloud-init）。**更新主机名须重启 Linux 后方可完全生效**；响应中带 `reboot_required: true` 与说明 `message`。`GET /api/network/status` 在存在该文件时会带 `raspberry_user_data` / `raspberry_user_data_path`。
 
-### 与 systemd `install-timer` 的关系
+### 与 systemd 定时器的关系
 
-脚本提供 `install-timer`；**ota-agent 在写入 YAML 且 WiFi 相关字段相对上次保存有变化时自动调用**（需 root）。若与 Web「执行一次看门狗」并行，可能短时间重复 `nmcli`，属预期。
+`wifi-watchdog.sh install` 注册定时器；**ota-agent 在 Web 保存 WiFi 时先 `wifi-apply.sh apply`，再确保定时器已安装**（需 root）。若与定时 `run` 并行，可能短时间重复 `nmcli`，属预期。
 
 ### 故障恢复
 
-- **WiFi / 网络**：在 Web 或 YAML 中修正 `network` 并保存；若未跑 root 导致 unit 未更新，可手动执行脚本 `install-timer` 或重启 agent。
+- **WiFi / 网络**：在 Web 或 YAML 中修正 `network` 并保存；若未跑 root 导致 unit 未更新，可手动执行 `wifi-watchdog.sh install --config …` 或重启 agent。
 - **忘记管理密码**：编辑 `admin_password` 后重启。
 
 ## 许可证

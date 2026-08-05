@@ -14,6 +14,7 @@
   <div class="tabs">
     <button type="button" class="tab active" data-tab="proc">进程</button>
     <button type="button" class="tab" data-tab="net">网络</button>
+    <button type="button" class="tab" data-tab="bt">蓝牙手柄</button>
     <button type="button" class="tab" data-tab="logs">日志</button>
   </div>
   <section id="proc">
@@ -26,7 +27,7 @@
     </table>
   </section>
   <section id="net" style="display:none;">
-    <p class="muted">保存 WiFi 写入 agent.yaml 并注册 wifi-watchdog 定时器（立即尝试连接）。热点 SSID=主机名、密码 Areantech0502；STA 在 3 分钟连不上时会<strong>临时</strong>开热点，重启后仍按 agent.yaml 优先 STA。改 hostname 需 Linux + 权限。</p>
+    <p class="muted">保存 WiFi 写入 agent.yaml，立即用 wifi-apply 改网，并注册 wifi-watchdog 定时器。热点 SSID=主机名、密码 Arenatech0502；STA 在约 3 分钟连不上时看门狗会<strong>临时</strong>开热点（不改 yaml），重启后仍优先 STA。改 hostname 需 Linux + 权限。</p>
     <pre class="raw" id="nstatus"></pre>
     <label>主机名</label>
     <input id="hostname" style="max-width:320px;"/>
@@ -41,7 +42,7 @@
       <label>密码（留空则不修改已存密码）</label>
       <input id="wpsk" type="password" style="max-width:320px;"/>
     </div>
-    <p id="whotspot-hint" class="muted" style="display:none;margin:.35rem 0;font-size:.85rem;">热点：SSID 固定为主机名；密码固定 Areantech0502（与 STA 的 wifi_ssid/wifi_psk 无关）。</p>
+    <p id="whotspot-hint" class="muted" style="display:none;margin:.35rem 0;font-size:.85rem;">热点：SSID 固定为主机名；密码固定 Arenatech0502（与 STA 的 wifi_ssid/wifi_psk 无关）。</p>
     <div class="net-wifi-actions">
       <button type="button" id="savenet" style="background:#238636;">保存并应用 WiFi</button>
     </div>
@@ -53,12 +54,27 @@
       <button type="button" id="initeth0" style="background:#8957e5;">初始化 eth0</button>
     </div>
     <pre class="raw" id="eth0out"></pre>
-    <h3 style="margin-top:1.5rem;font-size:1rem;">系统环境</h3>
-    <p class="muted">运行 <code>tools/install-deps-rpi.sh</code>：安装 SDL2/SDL2_mixer 开发包、音量与 <code>~/.asoundrc</code>、以及 <code>/boot/firmware/config.txt</code> 中的 USB 电流与 RTC 充电参数等。可能耗时数分钟，需 root（脚本内含 <code>sudo</code>）。</p>
+  </section>
+  <section id="bt" style="display:none;">
+    <p class="muted">管理蓝牙游戏手柄：查看已配对设备、扫描附近可配对设备并配对。操作前请将手柄置于<strong>配对模式</strong>。依赖系统 <code>bluetoothctl</code>（bluez）；经 sudo 执行 <code>tools/bluetooth-gamepad.sh</code>。</p>
+    <h3 style="margin-top:.5rem;font-size:1rem;">已配对</h3>
     <div class="net-wifi-actions">
-      <button type="button" id="installdepsrpi" style="background:#238636;">初始化环境</button>
+      <button type="button" id="bt-refresh-paired" style="background:#238636;">刷新已配对</button>
     </div>
-    <pre class="raw" id="depsout"></pre>
+    <table>
+      <thead><tr><th>名称</th><th>地址</th><th></th></tr></thead>
+      <tbody id="bt-paired"></tbody>
+    </table>
+    <h3 style="margin-top:1.5rem;font-size:1rem;">扫描可配对</h3>
+    <p class="muted" style="margin:.25rem 0;font-size:.85rem;">扫描约 10 秒；仅显示名称含 <strong>GameSir</strong> 的设备，已配对不会出现在列表中。</p>
+    <div class="net-wifi-actions">
+      <button type="button" id="bt-scan" style="background:#8957e5;">扫描设备</button>
+    </div>
+    <table>
+      <thead><tr><th>名称</th><th>地址</th><th></th></tr></thead>
+      <tbody id="bt-scan-list"></tbody>
+    </table>
+    <pre class="raw" id="btout"></pre>
   </section>
   <section id="logs" style="display:none;">
     <p class="muted">选择日期区间，自动扫描 <code>agent.yaml</code> 中 <code>log_upload</code> 配置的目录与 glob，按文件修改时间匹配 client / server / agent 日志并打包为 ZIP 下载。</p>
@@ -202,10 +218,106 @@
       const tab = t.getAttribute('data-tab');
       document.getElementById('proc').style.display = tab === 'proc' ? 'block' : 'none';
       document.getElementById('net').style.display = tab === 'net' ? 'block' : 'none';
+      document.getElementById('bt').style.display = tab === 'bt' ? 'block' : 'none';
       document.getElementById('logs').style.display = tab === 'logs' ? 'block' : 'none';
       if (tab === 'net') refreshNet();
+      if (tab === 'bt') refreshBtPaired();
       if (tab === 'logs') initLogDates();
     });
+    function renderBtRows(tbodyId, devices, actionLabel, actionAttr) {
+      const tb = document.getElementById(tbodyId);
+      tb.innerHTML = '';
+      if (!devices || !devices.length) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="3" class="muted">（无设备）</td>';
+        tb.appendChild(tr);
+        return;
+      }
+      for (const d of devices) {
+        const tr = document.createElement('tr');
+        const addr = d.address || '';
+        const name = d.name || addr;
+        tr.innerHTML = `<td>${escapeHtml(name)}</td><td><code>${escapeHtml(addr)}</code></td><td class="proc-actions"><button type="button" ${actionAttr}="${escapeHtml(addr)}" style="background:${actionAttr === 'data-bt-remove' ? '#da3633' : '#238636'};">${actionLabel}</button></td>`;
+        tb.appendChild(tr);
+      }
+    }
+    async function refreshBtPaired() {
+      const out = document.getElementById('btout');
+      try {
+        const r = await api('/api/bluetooth/paired');
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          out.textContent = j.error || '获取已配对失败';
+          alert(j.error || '获取已配对失败');
+          return;
+        }
+        renderBtRows('bt-paired', j.devices || [], '取消配对', 'data-bt-remove');
+        document.querySelectorAll('button[data-bt-remove]').forEach(b => {
+          b.onclick = () => btRemove(b.getAttribute('data-bt-remove'));
+        });
+        out.textContent = '已配对: ' + ((j.devices && j.devices.length) || 0) + ' 台';
+      } catch (e) {
+        if (e.message !== 'auth') alert('获取已配对失败');
+      }
+    }
+    async function btScan() {
+      const out = document.getElementById('btout');
+      const btn = document.getElementById('bt-scan');
+      out.textContent = '扫描中（约 10 秒，仅 GameSir），请将手柄置于配对模式…';
+      btn.disabled = true;
+      try {
+        const r = await api('/api/bluetooth/scan?seconds=10');
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          out.textContent = j.error || '扫描失败';
+          alert(j.error || '扫描失败');
+          return;
+        }
+        renderBtRows('bt-scan-list', j.devices || [], '配对', 'data-bt-pair');
+        document.querySelectorAll('button[data-bt-pair]').forEach(b => {
+          b.onclick = () => btPair(b.getAttribute('data-bt-pair'));
+        });
+        out.textContent = '扫描完成: ' + ((j.devices && j.devices.length) || 0) + ' 台可配对';
+      } catch (e) {
+        out.textContent = '';
+        if (e.message !== 'auth') alert('扫描失败');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+    async function btPair(addr) {
+      if (!confirm('配对设备 ' + addr + '？请确认手柄已进入配对模式。')) return;
+      const out = document.getElementById('btout');
+      out.textContent = '正在配对 ' + addr + '…';
+      const r = await api('/api/bluetooth/pair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: addr })
+      });
+      const j = await r.json().catch(() => ({}));
+      out.textContent = j.output || JSON.stringify(j, null, 2);
+      if (!r.ok) { alert(j.error || '配对失败'); return; }
+      alert('配对成功: ' + addr);
+      await refreshBtPaired();
+      document.getElementById('bt-scan-list').innerHTML = '';
+    }
+    async function btRemove(addr) {
+      if (!confirm('取消配对并删除设备 ' + addr + '？')) return;
+      const out = document.getElementById('btout');
+      out.textContent = '正在取消配对 ' + addr + '…';
+      const r = await api('/api/bluetooth/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: addr })
+      });
+      const j = await r.json().catch(() => ({}));
+      out.textContent = j.output || JSON.stringify(j, null, 2);
+      if (!r.ok) { alert(j.error || '取消配对失败'); return; }
+      alert('已取消配对: ' + addr);
+      await refreshBtPaired();
+    }
+    document.getElementById('bt-refresh-paired').onclick = () => refreshBtPaired();
+    document.getElementById('bt-scan').onclick = () => btScan();
     document.getElementById('log-download').onclick = async () => {
       const start = document.getElementById('log-start').value;
       const end = document.getElementById('log-end').value;
@@ -305,19 +417,6 @@
       out.textContent = t;
       if (!r.ok) {
         let msg = '初始化失败';
-        try { const j = JSON.parse(t); if (j.error) msg = j.error; } catch (_) {}
-        alert(msg);
-      }
-    };
-    document.getElementById('installdepsrpi').onclick = async () => {
-      if (!confirm('将执行 install-deps-rpi.sh（apt 安装等），可能耗时数分钟。是否继续？')) return;
-      const out = document.getElementById('depsout');
-      out.textContent = '执行中…';
-      const r = await api('/api/system/install-deps-rpi', { method: 'POST' });
-      const t = await r.text();
-      out.textContent = t;
-      if (!r.ok) {
-        let msg = '初始化环境失败';
         try { const j = JSON.parse(t); if (j.error) msg = j.error; } catch (_) {}
         alert(msg);
       }

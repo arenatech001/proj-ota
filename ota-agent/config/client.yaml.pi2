@@ -26,7 +26,6 @@ logging:
     level: debug
     format: json
     output: both
-    file_path: /home/arenatech/agent/logs/client.log
     max_size: 10
     max_backups: 10
     max_age: 28
@@ -63,6 +62,10 @@ rs485:
     max_speed: 100
     serial_port: /dev/ttyUSB0
     verbose: false
+bluetooth_gamepad:
+    enable: false
+    device_path: ""   # 空=自动选，优先 Gamesir；可填 /dev/input/js0
+    poll_hz: 120
 ps2:
     enable: true
     pin_mode: chardev
@@ -95,17 +98,16 @@ cs:
     pulse_duration: 50
 strip_led:
     enable: true
-    device: /dev/spidev1.0
+    device: /dev/spidev0.0
     count: 36
     speed: 3200000
     frame_interval_ms: 0
 uart:
     enable: true
-    serial_port: /dev/ttyS2
+    serial_port: /dev/ttyAMA0
     baud_rate: 9600
     read_timeout_us: 5000
 audio_engine:
     enable: true
     muted: false
-    asset_dir: /home/arenatech/agent/assets/audio
     system_output_volume_percent: 40

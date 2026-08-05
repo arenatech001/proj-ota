@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# 在 Raspberry Pi OS / Debian 上安装 SDL2 + SDL2_mixer 开发包（构建 CGO 所需）。
-sudo dpkg --configure -a
-sudo apt-get install -y \
-  build-essential \
-  pkg-config \
-  libsdl2-dev \
-  libsdl2-mixer-dev
+# USB / 非 HDMI 声卡：写入 ~/.asoundrc（client 音效为纯 Go beep/oto，不需要 SDL2）。
+set -euo pipefail
 
 # 自动检测 ALSA 播放声卡：优先 USB，其次非 HDMI；可用环境变量 ALSA_CARD 强制指定。
 detect_alsa_playback_card() {

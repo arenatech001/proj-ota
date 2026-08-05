@@ -151,6 +151,14 @@ func runInstallSystemd(args []string) int {
 		return 1
 	}
 
+	if err := installAgentSudoers(strings.TrimSpace(*userFlag)); err != nil {
+		fmt.Fprintf(os.Stderr, "install sudoers: %v\n", err)
+		return 1
+	}
+	if u := strings.TrimSpace(*userFlag); u != "" && u != "root" {
+		fmt.Printf("installed sudoers %s for user %s\n", agentSudoersPath, u)
+	}
+
 	fmt.Printf("installed %s\n  ExecStart: %s -config=%s\n", unitFile, exePath, cfgPath)
 	return 0
 }
@@ -200,6 +208,10 @@ func runUninstallSystemd(args []string) int {
 		fmt.Fprintf(os.Stderr, "systemctl daemon-reload: %v\n%s", err, strings.TrimSpace(string(out)))
 		return 1
 	}
+	if err := removeAgentSudoers(); err != nil {
+		fmt.Fprintf(os.Stderr, "remove sudoers: %v\n", err)
+		return 1
+	}
 	fmt.Printf("removed %s\n", unitFile)
 	return 0
 }
@@ -211,9 +223,10 @@ func printSystemdSubcommandUsage() {
   %s install-systemd [-config=PATH] [-unit=NAME] [-description=TEXT] [-user=USER]
   %s uninstall-systemd [-unit=NAME]
 
-init-rpi: install-systemd + install-deps-rpi.sh + init-eth0.sh + wifi-watchdog install (--no-apply).
-init-pi2: install-systemd + init-system-pi2.sh + init-eth0.sh + wifi-watchdog install (--no-apply).
-install-systemd writes /etc/systemd/system/<unit>.service, runs systemctl daemon-reload, and enable --now.
+init-rpi: install-systemd + install-deps-rpi.sh + init-eth0.sh + wifi-watchdog install (timer only).
+init-pi2: install-systemd + init-system-pi2.sh + init-eth0.sh + wifi-watchdog install (timer only).
+install-systemd writes /etc/systemd/system/<unit>.service, installs /etc/sudoers.d/arenatech-agent
+when -user is non-root (NOPASSWD for tools/*.sh, hostnamectl, tee user-data), then daemon-reload + enable --now.
 Requires Linux (systemd) and root. Subcommand must be the first argument (not after agent -config).
 
 `, filepath.Base(os.Args[0]), filepath.Base(os.Args[0]), filepath.Base(os.Args[0]), filepath.Base(os.Args[0]))

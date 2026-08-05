@@ -713,14 +713,25 @@ func main() {
 			os.Exit(runInitRpi(os.Args[2:]))
 		case "init-pi2":
 			os.Exit(runInitPi2(os.Args[2:]))
+		case "init":
+			fmt.Fprintln(os.Stderr, "subcommand 'init' was renamed; use 'init-rpi' (Raspberry Pi) or 'init-pi2' (Armbian PI2)")
+			os.Exit(2)
 		case "install-systemd":
 			os.Exit(runInstallSystemd(os.Args[2:]))
 		case "uninstall-systemd":
 			os.Exit(runUninstallSystemd(os.Args[2:]))
+		default:
+			// 避免未知子命令被当成普通启动（否则会误找 bin/agent.yaml）
+			if !strings.HasPrefix(os.Args[1], "-") {
+				fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", os.Args[1])
+				fmt.Fprintf(os.Stderr, "Usage: %s init-rpi|init-pi2|install-systemd|uninstall-systemd [flags]\n", filepath.Base(os.Args[0]))
+				fmt.Fprintf(os.Stderr, "       %s -config=/path/to/agent.yaml\n", filepath.Base(os.Args[0]))
+				os.Exit(2)
+			}
 		}
 	}
 
-	configPath := flag.String("config", "", "path to agent YAML (default: <exe-dir>/agent.yaml)")
+	configPath := flag.String("config", "", "path to agent YAML (default: <agent-root>/config/agent.yaml)")
 	flag.Parse()
 
 	cfgPath := strings.TrimSpace(*configPath)
@@ -736,6 +747,7 @@ func main() {
 	agentCfg, err := loadAgentConfig(cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config %s: %v\n", cfgPath, err)
+		fmt.Fprintf(os.Stderr, "提示: 请使用 -config=/home/arenatech/agent/config/agent.yaml\n")
 		os.Exit(1)
 	}
 	applyAgentDefaults(agentCfg)

@@ -90,11 +90,21 @@ func logUploadEnabled(c *AgentConfig) bool {
 }
 
 func defaultConfigPath() (string, error) {
+	if root, err := agentInstallRoot(); err == nil {
+		p := filepath.Join(root, "config", "agent.yaml")
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+		// 常见布局：即便文件尚未放入，也优先返回标准路径，便于错误提示
+		if st, err := os.Stat(filepath.Join(root, "config")); err == nil && st.IsDir() {
+			return p, nil
+		}
+	}
 	dir, err := getExecutableDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "../config/agent.yaml"), nil
+	return filepath.Clean(filepath.Join(dir, "..", "config", "agent.yaml")), nil
 }
 
 func loadAgentConfig(path string) (*AgentConfig, error) {

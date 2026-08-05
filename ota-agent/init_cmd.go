@@ -15,7 +15,7 @@ func printInitRpiUsage() {
 	fmt.Fprintf(os.Stderr, `Usage:
   %s init-rpi [-config=PATH] [-unit=NAME] [-description=TEXT] [-user=USER]
 
-树莓派首次部署：install-systemd + install-deps-rpi.sh + init-eth0.sh + wifi-watchdog install (--no-apply)。
+树莓派首次部署：install-systemd + install-deps-rpi.sh + init-eth0.sh + wifi-watchdog install（仅注册定时器）。
 
 需要 Linux、root，且 -config 指向的 agent.yaml 须已存在。
 
@@ -26,7 +26,7 @@ func printInitPi2Usage() {
 	fmt.Fprintf(os.Stderr, `Usage:
   %s init-pi2 [-config=PATH] [-unit=NAME] [-description=TEXT] [-user=USER]
 
-PI2（Armbian）首次部署：install-systemd + init-system-pi2.sh + init-eth0.sh + wifi-watchdog install (--no-apply)。
+PI2（Armbian）首次部署：install-systemd + init-system-pi2.sh + init-eth0.sh + wifi-watchdog install（仅注册定时器）。
 
 需要 Linux、root，且 -config 指向的 agent.yaml 须已存在。
 
@@ -96,6 +96,7 @@ func runInitPlatform(
 	}
 	if _, err := os.Stat(cfgPath); err != nil {
 		fmt.Fprintf(os.Stderr, "config file %s: %v\n", cfgPath, err)
+		fmt.Fprintf(os.Stderr, "提示: 标准路径为 <agent根>/config/agent.yaml，例如:\n  sudo %s %s -config=/home/arenatech/agent/config/agent.yaml\n", filepath.Base(os.Args[0]), cmdName)
 		return 1
 	}
 
@@ -150,8 +151,8 @@ func runInitPlatform(
 		return 1
 	}
 
-	fmt.Println("==> [4/4] wifi-watchdog install (--no-apply)")
-	wifiOut, err := runWiFiInstall(ctx, cfgPath, true, logger)
+	fmt.Println("==> [4/4] wifi-watchdog install（仅注册定时器）")
+	wifiOut, err := runWiFiInstall(ctx, cfgPath, logger)
 	if wifiOut != "" {
 		fmt.Print(wifiOut)
 	}

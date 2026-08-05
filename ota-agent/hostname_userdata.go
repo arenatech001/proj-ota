@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // raspberryFirmwareUserData is where Raspberry Pi OS (Bookworm+) stores cloud-init user-data.
@@ -39,11 +41,9 @@ func tryUpdateRaspberryUserDataHostname(hostname string) (bool, error) {
 	if newContent == content {
 		return false, nil
 	}
-	mode := fi.Mode().Perm()
-	if mode == 0 {
-		mode = 0644
-	}
-	if err := os.WriteFile(raspberryFirmwareUserData, []byte(newContent), mode); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := writeFilePrivileged(ctx, raspberryFirmwareUserData, []byte(newContent)); err != nil {
 		return false, err
 	}
 	return true, nil

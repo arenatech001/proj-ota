@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"time"
@@ -15,7 +12,7 @@ func installDepsRpiScriptPath() (string, error) {
 	return resolveAgentToolScript("install-deps-rpi.sh")
 }
 
-// runInstallDepsRpiScript runs tools/install-deps-rpi.sh (apt SDL2 deps, ALSA, /boot/firmware/config.txt, etc.).
+// runInstallDepsRpiScript runs tools/install-deps-rpi.sh (alsa/pulse volume tools, /boot/firmware/config.txt, gpio/spi udev; no SDL2).
 func runInstallDepsRpiScript(ctx context.Context, logger *Logger) (string, error) {
 	if runtime.GOOS != "linux" {
 		return "", fmt.Errorf("install deps only supported on linux")
@@ -26,16 +23,12 @@ func runInstallDepsRpiScript(ctx context.Context, logger *Logger) (string, error
 	}
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, script)
-	cmd.Env = os.Environ()
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	if err := cmd.Run(); err != nil {
+	out, err := runPrivilegedCombined(cctx, script)
+	if err != nil {
 		if logger != nil {
-			logger.Error("install-deps-rpi: %v\n%s", err, strings.TrimSpace(buf.String()))
+			logger.Error("install-deps-rpi: %v\n%s", err, strings.TrimSpace(out))
 		}
-		return buf.String(), err
+		return out, err
 	}
-	return buf.String(), nil
+	return out, nil
 }

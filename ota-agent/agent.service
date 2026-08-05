@@ -7,8 +7,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
-ExecStart=/home/arenatech/client/bin/ota-agent -config=/home/arenatech/client/bin/ota-agent.yaml
+User=arenatech
+ExecStart=/home/arenatech/agent/bin/ota-agent -config=/home/arenatech/agent/config/agent.yaml
 Restart=always
 RestartSec=10
 

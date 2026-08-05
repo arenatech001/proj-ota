@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
-# Raspberry Pi：在 /boot/firmware/config.txt 中追加或调整 USB 电流、RTC 充电、SPI、UART0（已存在则跳过，SPI 若为 off 则改为 on）
+  # Raspberry Pi OS：client 运行时依赖与板级配置（无需 SDL2）。
+# client 音效为纯 Go（beep/oto），不依赖 libsdl2 / libsdl2-mixer。
+# 本脚本：alsa/pulse 音量工具、/boot/firmware/config.txt（USB/RTC/SPI/UART）、gpio/spi/tty 权限。
+set -euo pipefail
+
+# 音量 API（pactl / amixer）；系统通常已有，重复安装无害
+if command -v apt-get >/dev/null 2>&1; then
+  sudo apt-get update -qq
+  sudo apt-get install -y alsa-utils pulseaudio-utils || true
+fi
+
 RPI_FIRMWARE_CONFIG="/boot/firmware/config.txt"
 append_config_txt_line_if_missing() {
   local line="$1"
@@ -66,3 +76,5 @@ EOF
   echo "udev 规则已写入: $rule（需重新登录或 reboot 后组权限生效）"
 }
 ensure_device_access_groups
+
+echo "install-deps-rpi 完成（未安装 SDL2；client 音效为纯 Go beep/oto）"
