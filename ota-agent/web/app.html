@@ -15,6 +15,7 @@
     <button type="button" class="tab active" data-tab="proc">进程</button>
     <button type="button" class="tab" data-tab="net">网络</button>
     <button type="button" class="tab" data-tab="bt">蓝牙手柄</button>
+    <button type="button" class="tab" data-tab="cfg">业务配置</button>
     <button type="button" class="tab" data-tab="logs">日志</button>
   </div>
   <section id="proc">
@@ -75,6 +76,24 @@
       <tbody id="bt-scan-list"></tbody>
     </table>
     <pre class="raw" id="btout"></pre>
+  </section>
+  <section id="cfg" style="display:none;">
+    <p class="muted">编辑 <code>client.yaml</code> / <code>server.yaml</code>（路径与进程 ID 在 <code>agent.yaml</code> 的 <code>biz_config</code> 中配置）。保存仅写盘；业务进程需重启后才生效。</p>
+    <div class="biz-cfg-toolbar">
+      <label for="biz-kind" style="margin-top:0;">配置文件</label>
+      <select id="biz-kind">
+        <option value="client">client.yaml</option>
+        <option value="server">server.yaml</option>
+      </select>
+      <button type="button" id="biz-reload" style="background:#21262d;">重新加载</button>
+    </div>
+    <p class="muted" style="margin:.35rem 0;font-size:.85rem;">路径：<code id="biz-path">—</code> · 重启进程 ID：<code id="biz-proc">—</code></p>
+    <textarea id="biz-content" class="biz-yaml" spellcheck="false" placeholder="YAML 内容…"></textarea>
+    <div class="net-wifi-actions">
+      <button type="button" id="biz-save" style="background:#238636;">保存</button>
+      <button type="button" id="biz-save-restart" style="background:#bb8009;">保存并重启</button>
+    </div>
+    <p id="biz-status" class="muted" style="margin-top:.5rem;"></p>
   </section>
   <section id="logs" style="display:none;">
     <p class="muted">选择日期区间，自动扫描 <code>agent.yaml</code> 中 <code>log_upload</code> 配置的目录与 glob，按文件修改时间匹配 client / server / agent 日志并打包为 ZIP 下载。</p>
@@ -219,11 +238,64 @@
       document.getElementById('proc').style.display = tab === 'proc' ? 'block' : 'none';
       document.getElementById('net').style.display = tab === 'net' ? 'block' : 'none';
       document.getElementById('bt').style.display = tab === 'bt' ? 'block' : 'none';
+      document.getElementById('cfg').style.display = tab === 'cfg' ? 'block' : 'none';
       document.getElementById('logs').style.display = tab === 'logs' ? 'block' : 'none';
       if (tab === 'net') refreshNet();
       if (tab === 'bt') refreshBtPaired();
+      if (tab === 'cfg') loadBizConfig();
       if (tab === 'logs') initLogDates();
     });
+    async function loadBizConfig() {
+      const kind = document.getElementById('biz-kind').value;
+      const status = document.getElementById('biz-status');
+      status.textContent = '加载中…';
+      try {
+        const r = await api('/api/biz-config/' + encodeURIComponent(kind));
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          status.textContent = j.error || '加载失败';
+          alert(j.error || '加载失败');
+          return;
+        }
+        document.getElementById('biz-path').textContent = j.path || '—';
+        document.getElementById('biz-proc').textContent = j.process_id || '（未配置）';
+        document.getElementById('biz-content').value = j.content || '';
+        status.textContent = j.exists === false ? '文件不存在，保存将新建' : '已加载';
+      } catch (e) {
+        if (e.message !== 'auth') status.textContent = '加载失败';
+      }
+    }
+    async function saveBizConfig(restart) {
+      const kind = document.getElementById('biz-kind').value;
+      const content = document.getElementById('biz-content').value;
+      const status = document.getElementById('biz-status');
+      if (restart) {
+        const proc = document.getElementById('biz-proc').textContent;
+        if (!confirm('保存并重启进程 ' + proc + '？')) return;
+      }
+      status.textContent = restart ? '保存并重启中…' : '保存中…';
+      try {
+        const r = await api('/api/biz-config/' + encodeURIComponent(kind), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content, restart: !!restart })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          status.textContent = j.error || '保存失败';
+          alert(j.error || '保存失败');
+          return;
+        }
+        status.textContent = j.restarted ? ('已保存并重启进程 ' + (j.process_id || '')) : ('已保存到 ' + (j.path || ''));
+        if (restart) await loadProcs();
+      } catch (e) {
+        if (e.message !== 'auth') status.textContent = '保存失败';
+      }
+    }
+    document.getElementById('biz-kind').onchange = () => loadBizConfig();
+    document.getElementById('biz-reload').onclick = () => loadBizConfig();
+    document.getElementById('biz-save').onclick = () => saveBizConfig(false);
+    document.getElementById('biz-save-restart').onclick = () => saveBizConfig(true);
     function renderBtRows(tbodyId, devices, actionLabel, actionAttr) {
       const tb = document.getElementById(tbodyId);
       tb.innerHTML = '';

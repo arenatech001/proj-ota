@@ -1,4 +1,3 @@
-rcubox_id: "5"
 rcubox_version: "2.1"
 rcubox_port: 9000
 status_interval: 1

@@ -167,6 +167,7 @@ func (s *adminServer) Start() error {
 	mux.HandleFunc("/api/bluetooth/pair", s.handleAPIBluetoothPair)
 	mux.HandleFunc("/api/bluetooth/remove", s.handleAPIBluetoothRemove)
 	mux.HandleFunc("/api/logs/download", s.handleAPILogsDownload)
+	mux.HandleFunc("/api/biz-config/", s.handleAPIBizConfig)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(s.static))))
 
 	s.srv = &http.Server{

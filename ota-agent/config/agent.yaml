@@ -1,4 +1,4 @@
-config_url: http://www.arenatech.cn/ota/agent-v2.1/version.yaml
+config_url: http://www.arenatech.cn/ota/agent-v2.2/version.yaml
 version_file: version
 agent_id: ""
 daemon: null
@@ -46,3 +46,8 @@ network:
     wifi_mode: sta
     wifi_ssid: AT001
     wifi_psk: Arenatech0502
+biz_config:
+    client_path: config/client.yaml
+    server_path: config/server.yaml
+    client_process_id: "1"
+    server_process_id: "2"

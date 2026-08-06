@@ -41,6 +41,15 @@ type AgentConfig struct {
 
 	Processes []ManagedProcessConfig `yaml:"processes" json:"processes"`
 	Network   AdminNetworkConfig     `yaml:"network" json:"network"`
+	BizConfig BizConfig              `yaml:"biz_config" json:"biz_config"`
+}
+
+// BizConfig paths for client/server YAML editable via admin UI.
+type BizConfig struct {
+	ClientPath      string `yaml:"client_path" json:"client_path"`
+	ServerPath      string `yaml:"server_path" json:"server_path"`
+	ClientProcessID string `yaml:"client_process_id" json:"client_process_id"`
+	ServerProcessID string `yaml:"server_process_id" json:"server_process_id"`
 }
 
 // LogUploadConfig remote log job loop (all from YAML).
@@ -186,6 +195,12 @@ func applyAgentDefaults(c *AgentConfig) {
 		if root, err := agentInstallRoot(); err == nil {
 			c.Logging.FilePath = filepath.Join(root, "logs", "agent.log")
 		}
+	}
+	if strings.TrimSpace(c.BizConfig.ClientPath) == "" {
+		c.BizConfig.ClientPath = "config/client.yaml"
+	}
+	if strings.TrimSpace(c.BizConfig.ServerPath) == "" {
+		c.BizConfig.ServerPath = "config/server.yaml"
 	}
 	normalizeAgentLogUploadPaths(c)
 }
